@@ -33,6 +33,11 @@ export function getAssetsDir(baseDir?: string): string {
   return ensureDirectory(dir);
 }
 
+export function getLibrariesDir(baseDir?: string): string {
+  const dir = join(baseDir ?? getMinecraftBaseDir(), "libraries");
+  return ensureDirectory(dir);
+}
+
 export function getModsDir(baseDir?: string): string {
   const dir = join(baseDir ?? getMinecraftBaseDir(), "mods");
   return ensureDirectory(dir);

@@ -40,6 +40,14 @@ export interface VersionManifestEntry {
   sha1: string;
 }
 
+export interface VersionManifest {
+  latest: {
+    release: string;
+    snapshot: string;
+  };
+  versions: VersionManifestEntry[];
+}
+
 export interface VersionMetadata {
   id: string;
   assets: string;

@@ -14,6 +14,7 @@ export interface LaunchOptions {
   mods?: ModPackage[];
   modInstallTarget?: ModInstallTarget;
   authSession?: AuthSession;
+  librariesDirectory?: string;
   gameDirectory: string;
   assetsDirectory: string;
   versionDirectory: string;

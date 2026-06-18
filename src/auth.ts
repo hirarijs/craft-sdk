@@ -1,33 +1,43 @@
 import { writeJson, readJson, pathExists } from "./utils/fs.js";
 import type { AuthSession, UserProfile } from "./models/profile.js";
 
-const SESSION_FILE = "craft-sdk-session.json";
-
-export async function loginWithToken(accessToken: string, clientToken: string, profileId: string, profileName: string): Promise<AuthSession> {
-  const session: AuthSession = {
-    accessToken,
-    clientToken,
-    selectedProfile: { id: profileId, name: profileName },
-    profile: { id: profileId, name: profileName },
-    timestamp: Date.now(),
-  };
-
-  saveSession(session);
-  return session;
+export interface AuthOptions {
+  sessionFile?: string;
 }
 
-export function saveSession(session: AuthSession, filePath = SESSION_FILE): void {
-  writeJson(filePath, session);
-}
+export class AuthManager {
+  private sessionFile: string;
 
-export function loadSession(filePath = SESSION_FILE): AuthSession | undefined {
-  if (!pathExists(filePath)) {
-    return undefined;
+  constructor(options?: AuthOptions) {
+    this.sessionFile = options?.sessionFile ?? "craft-sdk-session.json";
   }
 
-  return readJson<AuthSession>(filePath);
-}
+  async loginWithToken(accessToken: string, clientToken: string, profileId: string, profileName: string): Promise<AuthSession> {
+    const session: AuthSession = {
+      accessToken,
+      clientToken,
+      selectedProfile: { id: profileId, name: profileName },
+      profile: { id: profileId, name: profileName },
+      timestamp: Date.now(),
+    };
+    this.saveSession(session);
+    return session;
+  }
 
-export function createProfile(username: string, session?: AuthSession): UserProfile {
-  return { username, session };
+  saveSession(session: AuthSession): void {
+    writeJson(this.sessionFile, session);
+  }
+
+  loadSession(): AuthSession | undefined {
+    if (!pathExists(this.sessionFile)) {
+      return undefined;
+    }
+    return readJson<AuthSession>(this.sessionFile);
+  }
+
+  createProfile(username: string, session?: AuthSession): UserProfile {
+    const profile: UserProfile = { username };
+    if (session) profile.session = session;
+    return profile;
+  }
 }
