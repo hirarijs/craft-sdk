@@ -1,4 +1,4 @@
-export { CraftSDK, type CraftSdkOptions } from "./sdk.js";
+export { CraftSDK, type CraftSdkOptions, type PlayGameOptions } from "./sdk.js";
 export { AuthManager } from "./auth.js";
 export { Downloader } from "./downloader.js";
 export { Installer } from "./installer.js";

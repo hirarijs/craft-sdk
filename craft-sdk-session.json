@@ -1,0 +1,13 @@
+{
+  "accessToken": "test-access-token",
+  "clientToken": "test-client-token",
+  "selectedProfile": {
+    "id": "test-profile-id",
+    "name": "TestPlayer"
+  },
+  "profile": {
+    "id": "test-profile-id",
+    "name": "TestPlayer"
+  },
+  "timestamp": 1781796327267
+}
