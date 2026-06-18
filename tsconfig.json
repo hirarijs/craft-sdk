@@ -4,6 +4,8 @@
     "outDir": "./dist",
     "module": "nodenext",
     "target": "esnext",
+    "moduleResolution": "nodenext",
+    "lib": ["esnext", "dom"],
     "types": ["node"],
     "declaration": true,
     "declarationMap": true,
@@ -14,6 +16,7 @@
     "isolatedModules": true,
     "noUncheckedSideEffectImports": true,
     "moduleDetection": "force",
-    "skipLibCheck": true,
-  }
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*"]
 }

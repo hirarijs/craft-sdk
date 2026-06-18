@@ -1,38 +1,58 @@
 import { existsSync, accessSync, constants } from "node:fs";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { getPlatformInfo } from "./platform.js";
 
-export function findJavaExecutable(preferred?: string): string | undefined {
-  if (preferred) {
-    try {
-      accessSync(preferred, constants.X_OK);
-      return preferred;
-    } catch {
-      // ignore invalid executable path
+function pathExistsExecutable(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function findInPath(executable: string): string | undefined {
+  const platform = getPlatformInfo();
+  if (platform.isWindows) {
+    const where = spawnSync("where", [executable], { encoding: "utf8" });
+    if (where.status === 0 && where.stdout) {
+      return where.stdout.split(/\r?\n/).find(Boolean);
     }
+  } else {
+    const which = spawnSync("which", [executable], { encoding: "utf8" });
+    if (which.status === 0 && which.stdout) {
+      return which.stdout.split(/\r?\n/).find(Boolean);
+    }
+  }
+  return undefined;
+}
+
+export function findJavaExecutable(preferred?: string): string | undefined {
+  if (preferred && pathExistsExecutable(preferred)) {
+    return preferred;
   }
 
   const platform = getPlatformInfo();
   const paths: string[] = [];
 
   if (platform.isWindows) {
-    paths.push("java.exe");
-    const programFiles = process.env["ProgramFiles"] ?? "C:\\Program Files";
-    paths.push(join(programFiles, "Java", "bin", "java.exe"));
+    paths.push(join(process.env["ProgramFiles"] ?? "C:\\Program Files", "Java", "bin", "java.exe"));
     paths.push(join(process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)", "Java", "bin", "java.exe"));
   } else {
-    paths.push("java");
     paths.push("/usr/bin/java");
     paths.push("/usr/local/bin/java");
   }
 
   for (const path of paths) {
-    try {
-      accessSync(path, constants.X_OK);
+    if (pathExistsExecutable(path)) {
       return path;
-    } catch {
-      continue;
     }
+  }
+
+  const pathFound = findInPath(platform.isWindows ? "java.exe" : "java");
+  if (pathFound && pathExistsExecutable(pathFound)) {
+    return pathFound;
   }
 
   return undefined;

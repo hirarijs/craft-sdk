@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { writeJson, ensureDir, pathExists } from "./utils/fs.js";
+import { writeJson, ensureDir, pathExists, readJson } from "./utils/fs.js";
 import { downloadFile } from "./utils/downloader.js";
 import { sha1File } from "./utils/checksum.js";
 import type { DownloadOptions, InstallOptions } from "./models/options.js";
@@ -11,8 +11,7 @@ export async function downloadVersionMetadata(url: string, targetDirectory: stri
   ensureDir(targetDirectory);
   const targetPath = join(targetDirectory, "version.json");
   await downloadFile(url, targetPath);
-  const metadata = JSON.parse(await import(`file://${targetPath}`)) as VersionMetadata;
-  return metadata;
+  return readJson<VersionMetadata>(targetPath);
 }
 
 export async function downloadClientJar(metadata: VersionMetadata, versionDirectory: string): Promise<string> {
@@ -68,7 +67,7 @@ export async function findOrDownloadVersion(options: DownloadOptions): Promise<V
   const manifestPath = join(versionDir, "version.json");
 
   if (pathExists(manifestPath)) {
-    return JSON.parse(await import(`file://${manifestPath}`)) as VersionMetadata;
+    return readJson<VersionMetadata>(manifestPath);
   }
 
   throw new Error("Version metadata not found locally. Please provide URL for metadata download.");
