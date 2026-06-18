@@ -20,15 +20,16 @@ export async function downloadFile(url: string, filePath: string, timeoutMs = 30
     const client = url.startsWith("https://") ? request : httpRequest;
     const requestObj = client(url, (response) => {
       if (response.statusCode && response.statusCode >= 400) {
+        stream.destroy();
         reject(new Error(`Failed to download ${url}: ${response.statusCode}`));
         return;
       }
 
       response.pipe(stream);
-      response.on("end", () => resolve({ filePath }));
-      response.on("error", reject);
     });
 
+    stream.on("finish", () => resolve({ filePath }));
+    stream.on("error", reject);
     requestObj.on("error", reject);
     requestObj.setTimeout(timeoutMs, () => {
       requestObj.destroy(new Error(`Timeout downloading ${url}`));
