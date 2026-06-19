@@ -2,6 +2,7 @@ import { AuthManager, type AuthOptions } from "./auth.js";
 import { Downloader, type DownloaderOptions } from "./downloader.js";
 import { Installer, type InstallerOptions } from "./installer.js";
 import { GameLauncher } from "./launcher.js";
+import { join, resolve } from "node:path";
 import { API_SOURCE, type ApiSource } from "./constant.js";
 import type { LaunchOptions } from "./models/options.js";
 import type { VersionMetadata } from "./models/version.js";
@@ -49,9 +50,8 @@ export class CraftSDK {
   }
 
   async playGame(options: PlayGameOptions): Promise<number> {
-    const gameDir = options.gameDirectory;
-    const assetsDir = `${gameDir}/assets`;
-    const versionDir = `${gameDir}/versions`;
+    const gameDir = resolve(options.gameDirectory);
+    const assetsDir = join(gameDir, "assets");
     const loader = options.loader ?? "vanilla";
 
     // 1. Handle authentication
@@ -69,7 +69,7 @@ export class CraftSDK {
     }
 
     // 2. Download version metadata
-    const { metadata } = await this.installer.prepareVersion(options.version, gameDir);
+    const { metadata, versionDirectory } = await this.installer.prepareVersion(options.version, gameDir);
 
     // 3. Install mods if provided
     if (options.mods && options.mods.length > 0) {
@@ -88,7 +88,7 @@ export class CraftSDK {
       version: options.version,
       gameDirectory: gameDir,
       assetsDirectory: assetsDir,
-      versionDirectory: versionDir,
+      versionDirectory,
       authSession: session,
       loader,
     };

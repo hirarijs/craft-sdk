@@ -142,3 +142,5 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
 .minecraft/
+craft-sdk-session.json
+temp-session.json

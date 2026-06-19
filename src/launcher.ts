@@ -69,6 +69,10 @@ function buildClasspath(metadata: VersionMetadata, options: LaunchOptions): stri
 
   const librariesDir = options.librariesDirectory ?? getLibrariesDir(options.gameDirectory);
   for (const library of metadata.libraries ?? []) {
+    if (!shouldIncludeEntry(library)) {
+      continue;
+    }
+
     const artifact = library.downloads?.artifact;
     if (!artifact?.path) {
       continue;

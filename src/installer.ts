@@ -91,7 +91,14 @@ export class Installer {
 
     const targetPath = join(librariesDirectory, artifact.path);
     if (pathExists(targetPath)) {
-      return targetPath;
+      if (!artifact.sha1) {
+        return targetPath;
+      }
+
+      const checksum = await sha1File(targetPath);
+      if (checksum === artifact.sha1) {
+        return targetPath;
+      }
     }
 
     ensureDir(dirname(targetPath));
