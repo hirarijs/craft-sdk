@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { runJavaProcess } from "./platform/process.js";
 import { findJavaExecutable } from "./platform/java.js";
 import { getLibrariesDir } from "./platform/paths.js";
+import { getMavenArtifactPath } from "./utils/maven.js";
 import type { LaunchOptions } from "./models/options.js";
 import type { VersionMetadata } from "./models/version.js";
 
@@ -114,7 +115,7 @@ function buildDefaultGameArguments(options: LaunchOptions, metadata: VersionMeta
 
 function buildClasspath(metadata: VersionMetadata, options: LaunchOptions): string[] {
   const classpath: string[] = [];
-  const versionJar = join(options.versionDirectory, `${metadata.id}.jar`);
+  const versionJar = options.clientJarPath ?? join(options.versionDirectory, `${metadata.jar ?? metadata.id}.jar`);
   classpath.push(versionJar);
 
   const librariesDir = options.librariesDirectory ?? getLibrariesDir(options.gameDirectory);
@@ -123,12 +124,8 @@ function buildClasspath(metadata: VersionMetadata, options: LaunchOptions): stri
       continue;
     }
 
-    const artifact = library.downloads?.artifact;
-    if (!artifact?.path) {
-      continue;
-    }
-
-    classpath.push(join(librariesDir, artifact.path));
+    const artifactPath = library.downloads?.artifact?.path ?? getMavenArtifactPath(library.name).path;
+    classpath.push(join(librariesDir, artifactPath));
   }
 
   return classpath;

@@ -17,6 +17,7 @@ export interface PlayGameOptions {
   version: string;
   gameDirectory: string;
   loader?: "vanilla" | "forge" | "fabric" | "quilt";
+  loaderVersion?: string;
   accessToken?: string;
   clientToken?: string;
   profileId?: string;
@@ -68,8 +69,17 @@ export class CraftSDK {
       throw new Error("No valid session found. Please provide authentication credentials.");
     }
 
-    // 2. Download version metadata
-    const { metadata, versionDirectory } = await this.installer.prepareVersion(options.version, gameDir);
+    // 2. Download version metadata and install loader profile when needed
+    const preparedVersion = loader === "vanilla"
+      ? await this.installer.prepareVersion(options.version, gameDir)
+      : await this.installer.installLoader({
+          loader,
+          minecraftVersion: options.version,
+          baseDirectory: gameDir,
+          ...(options.loaderVersion ? { loaderVersion: options.loaderVersion } : {}),
+          ...(options.javaPath ? { javaPath: options.javaPath } : {}),
+        });
+    const { metadata, versionDirectory, clientJarPath } = preparedVersion;
 
     // 3. Install mods if provided
     if (options.mods && options.mods.length > 0) {
@@ -85,10 +95,11 @@ export class CraftSDK {
 
     // 4. Launch game
     const launchOptions: LaunchOptions = {
-      version: options.version,
+      version: metadata.id,
       gameDirectory: gameDir,
       assetsDirectory: assetsDir,
       versionDirectory,
+      clientJarPath,
       authSession: session,
       loader,
     };

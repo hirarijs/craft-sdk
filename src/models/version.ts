@@ -12,6 +12,7 @@ export interface LibraryArtifact {
 
 export interface LibraryEntry {
   name: string;
+  url?: string;
   downloads?: {
     artifact?: LibraryArtifact;
     classifiers?: Record<string, LibraryArtifact>;

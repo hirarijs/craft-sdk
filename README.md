@@ -124,10 +124,21 @@ interface PlayGameOptions {
 Run test samples:
 
 ```bash
-yarn test
+yarn test vanilla
+yarn test fabric
+yarn test forge
 ```
 
-The test file demonstrates both step-by-step and one-step workflows.
+`yarn test` defaults to the vanilla launch test. Use `yarn test all` to run vanilla, Fabric, and Forge in sequence.
+
+Optional environment overrides:
+
+```bash
+MC_VERSION=1.20.1 yarn test fabric
+FABRIC_LOADER_VERSION=0.16.14 yarn test fabric
+FORGE_LOADER_VERSION=47.4.0 yarn test forge
+MC_GAME_DIR=.minecraft yarn test vanilla
+```
 
 ## Building
 

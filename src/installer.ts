@@ -1,7 +1,11 @@
 import { join, dirname } from "node:path";
-import { ensureDir, pathExists, readJson } from "./utils/fs.js";
+import { readdirSync } from "node:fs";
+import { ensureDir, pathExists, readJson, writeJson } from "./utils/fs.js";
 import { downloadFile } from "./utils/downloader.js";
 import { sha1File } from "./utils/checksum.js";
+import { getMavenArtifactPath } from "./utils/maven.js";
+import { findJavaExecutable } from "./platform/java.js";
+import { runJavaProcess } from "./platform/process.js";
 import type { DownloadOptions, InstallOptions } from "./models/options.js";
 import type { ModPackage, ModInstallTarget } from "./models/mod.js";
 import { getVersionDir, getModsDir, getLibrariesDir, getAssetsDir } from "./platform/paths.js";
@@ -25,6 +29,22 @@ export interface PrepareVersionOptions {
   validate?: boolean;
 }
 
+export type LoaderInstallType = "forge" | "fabric" | "quilt";
+
+export interface InstallLoaderOptions extends PrepareVersionOptions {
+  loader: LoaderInstallType;
+  minecraftVersion: string;
+  baseDirectory: string;
+  loaderVersion?: string;
+  javaPath?: string;
+}
+
+export interface PreparedVersion {
+  metadata: VersionMetadata;
+  versionDirectory: string;
+  clientJarPath: string;
+}
+
 interface AssetObject {
   hash: string;
   size: number;
@@ -34,7 +54,12 @@ interface AssetIndexData {
   objects: Record<string, AssetObject>;
 }
 
+type VersionMetadataInput = Partial<VersionMetadata> & Pick<VersionMetadata, "id">;
+
 const DEFAULT_VERSION_MANIFEST_URL = API_ENDPOINTS[API_SOURCE.MOJANG].versionManifest;
+const FABRIC_META_BASE = "https://meta.fabricmc.net/v2";
+const QUILT_META_BASE = "https://meta.quiltmc.org/v3";
+const FORGE_MAVEN_BASE = "https://maven.minecraftforge.net/";
 
 export class Installer {
   private apiSource: ApiSource;
@@ -55,6 +80,18 @@ export class Installer {
 
   getAssetsBase(): string {
     return API_ENDPOINTS[this.apiSource].assetsBase;
+  }
+
+  async installLoader(options: InstallLoaderOptions): Promise<PreparedVersion> {
+    if (options.loader === "fabric") {
+      return this.installFabricLoader(options);
+    }
+
+    if (options.loader === "quilt") {
+      return this.installQuiltLoader(options);
+    }
+
+    return this.installForgeLoader(options);
   }
 
   async downloadMinecraftVersionManifest(targetDirectory: string): Promise<VersionManifest> {
@@ -121,18 +158,16 @@ export class Installer {
     return { filePath, valid: true, expectedSha1, actualSha1 };
   }
 
-  async validateVersionFiles(metadata: VersionMetadata, baseDirectory: string, versionDirectory: string): Promise<void> {
-    const clientJar = join(versionDirectory, `${metadata.id}.jar`);
+  async validateVersionFiles(metadata: VersionMetadata, baseDirectory: string, versionDirectory: string, clientJarPath?: string): Promise<void> {
+    const clientJar = clientJarPath ?? join(versionDirectory, `${metadata.jar ?? metadata.id}.jar`);
     await this.assertValidFile(clientJar, metadata.downloads.client.sha1, `client jar ${metadata.id}`);
 
     const librariesDir = getLibrariesDir(baseDirectory);
     for (const library of metadata.libraries ?? []) {
       const artifact = library.downloads?.artifact;
-      if (!artifact?.path) {
-        continue;
-      }
+      const artifactPath = artifact?.path ?? getMavenArtifactPath(library.name).path;
 
-      await this.assertValidFile(join(librariesDir, artifact.path), artifact.sha1, `library ${library.name}`);
+      await this.assertValidFile(join(librariesDir, artifactPath), artifact?.sha1, `library ${library.name}`);
     }
 
     await this.validateAssets(metadata, baseDirectory);
@@ -188,23 +223,21 @@ export class Installer {
 
   private async downloadLibraryArtifact(library: LibraryEntry, librariesDirectory: string): Promise<string> {
     const artifact = library.downloads?.artifact;
-    if (!artifact?.path) {
-      throw new Error(`Library artifact path missing for ${library.name}`);
-    }
+    const artifactPath = artifact?.path ?? getMavenArtifactPath(library.name).path;
 
-    const targetPath = join(librariesDirectory, artifact.path);
+    const targetPath = join(librariesDirectory, artifactPath);
     if (pathExists(targetPath)) {
-      const validation = await this.validateFile(targetPath, artifact.sha1);
+      const validation = await this.validateFile(targetPath, artifact?.sha1);
       if (validation.valid) {
         return targetPath;
       }
     }
 
     ensureDir(dirname(targetPath));
-    const url = artifact.url ?? `${this.getLibrariesBase()}${artifact.path}`;
+    const url = artifact?.url ?? `${library.url ?? this.getLibrariesBase()}${artifactPath}`;
     await downloadFile(url, targetPath, this.timeoutMs);
 
-    if (artifact.sha1) {
+    if (artifact?.sha1) {
       const checksum = await sha1File(targetPath);
       if (checksum !== artifact.sha1) {
         throw new Error(`Library checksum mismatch for ${library.name}: expected ${artifact.sha1}, got ${checksum}`);
@@ -212,6 +245,179 @@ export class Installer {
     }
 
     return targetPath;
+  }
+
+  private async installFabricLoader(options: InstallLoaderOptions): Promise<PreparedVersion> {
+    const baseVersion = await this.prepareVersion(options.minecraftVersion, options.baseDirectory, options);
+    const loaderVersion = options.loaderVersion ?? await this.getLatestFabricLoaderVersion(options.minecraftVersion);
+    const metadata = await this.fetchJson<VersionMetadataInput>(
+      `${FABRIC_META_BASE}/versions/loader/${encodeURIComponent(options.minecraftVersion)}/${encodeURIComponent(loaderVersion)}/profile/json`
+    );
+    return this.installProfileLoaderVersion(metadata, baseVersion, options.baseDirectory, options);
+  }
+
+  private async installQuiltLoader(options: InstallLoaderOptions): Promise<PreparedVersion> {
+    const baseVersion = await this.prepareVersion(options.minecraftVersion, options.baseDirectory, options);
+    const loaderVersion = options.loaderVersion ?? await this.getLatestQuiltLoaderVersion(options.minecraftVersion);
+    const metadata = await this.fetchJson<VersionMetadataInput>(
+      `${QUILT_META_BASE}/versions/loader/${encodeURIComponent(options.minecraftVersion)}/${encodeURIComponent(loaderVersion)}/profile/json`
+    );
+    return this.installProfileLoaderVersion(metadata, baseVersion, options.baseDirectory, options);
+  }
+
+  private async installForgeLoader(options: InstallLoaderOptions): Promise<PreparedVersion> {
+    const baseVersion = await this.prepareVersion(options.minecraftVersion, options.baseDirectory, options);
+    const forgeVersion = await this.resolveForgeVersion(options.minecraftVersion, options.loaderVersion);
+    const forgeId = `${options.minecraftVersion}-forge-${forgeVersion.replace(`${options.minecraftVersion}-`, "")}`;
+    let versionDirectory = join(getVersionDir(options.baseDirectory), forgeId);
+
+    if (!this.hasVersionMetadata(versionDirectory, forgeId)) {
+      const installerDir = join(options.baseDirectory, "installers");
+      ensureDir(installerDir);
+      const installerPath = join(installerDir, `forge-${forgeVersion}-installer.jar`);
+      const installerUrl = `${FORGE_MAVEN_BASE}net/minecraftforge/forge/${forgeVersion}/forge-${forgeVersion}-installer.jar`;
+      await downloadFile(installerUrl, installerPath, this.timeoutMs);
+
+      const javaExecutable = options.javaPath ?? findJavaExecutable();
+      if (!javaExecutable) {
+        throw new Error("Java executable not found on the system.");
+      }
+
+      const exitCode = await runJavaProcess({
+        javaExecutable,
+        args: ["-jar", installerPath, "--installClient", options.baseDirectory],
+        cwd: options.baseDirectory,
+      });
+      if (exitCode !== 0) {
+        throw new Error(`Forge installer exited with code ${exitCode}.`);
+      }
+    }
+
+    if (!this.hasVersionMetadata(versionDirectory, forgeId)) {
+      versionDirectory = this.findInstalledForgeVersionDirectory(options.minecraftVersion, options.baseDirectory);
+    }
+
+    const forgeMetadata = this.readVersionMetadataFromDirectory(versionDirectory, forgeId);
+    const metadata = this.mergeVersionMetadata(baseVersion.metadata, forgeMetadata);
+    await this.downloadLibraries(metadata, options.baseDirectory);
+    if (options.validate ?? true) {
+      await this.validateVersionFiles(metadata, options.baseDirectory, baseVersion.versionDirectory, baseVersion.clientJarPath);
+    }
+
+    return { metadata, versionDirectory, clientJarPath: baseVersion.clientJarPath };
+  }
+
+  private async installProfileLoaderVersion(
+    loaderMetadata: VersionMetadataInput,
+    baseVersion: PreparedVersion,
+    baseDirectory: string,
+    options?: PrepareVersionOptions
+  ): Promise<PreparedVersion> {
+    const metadata = this.mergeVersionMetadata(baseVersion.metadata, loaderMetadata);
+    const versionDirectory = join(getVersionDir(baseDirectory), loaderMetadata.id);
+    ensureDir(versionDirectory);
+    writeJson(join(versionDirectory, "version.json"), loaderMetadata);
+    writeJson(join(versionDirectory, `${loaderMetadata.id}.json`), loaderMetadata);
+
+    await this.downloadLibraries(metadata, baseDirectory);
+    if (options?.validate ?? true) {
+      await this.validateVersionFiles(metadata, baseDirectory, baseVersion.versionDirectory, baseVersion.clientJarPath);
+    }
+
+    return { metadata, versionDirectory, clientJarPath: baseVersion.clientJarPath };
+  }
+
+  private mergeVersionMetadata(parent: VersionMetadata, child: VersionMetadataInput): VersionMetadata {
+    const parentArguments = parent.arguments ?? {};
+    const childArguments = child.arguments ?? {};
+    const argumentsValue: NonNullable<VersionMetadata["arguments"]> = {
+      jvm: [...(parentArguments.jvm ?? []), ...(childArguments.jvm ?? [])],
+    };
+    const gameArguments = childArguments.game ?? parentArguments.game;
+    if (gameArguments) {
+      argumentsValue.game = gameArguments;
+    }
+
+    return {
+      ...parent,
+      ...child,
+      id: child.id,
+      assets: child.assets ?? parent.assets,
+      assetIndex: child.assetIndex ?? parent.assetIndex,
+      downloads: child.downloads ? { ...parent.downloads, ...child.downloads } : parent.downloads,
+      libraries: [...(parent.libraries ?? []), ...(child.libraries ?? [])],
+      mainClass: child.mainClass ?? parent.mainClass,
+      arguments: argumentsValue,
+      minimumLauncherVersion: child.minimumLauncherVersion ?? parent.minimumLauncherVersion,
+      jar: child.jar ?? child.inheritsFrom ?? parent.id,
+    };
+  }
+
+  private async getLatestFabricLoaderVersion(minecraftVersion: string): Promise<string> {
+    const versions = await this.fetchJson<Array<{ loader?: { version?: string; stable?: boolean } }>>(
+      `${FABRIC_META_BASE}/versions/loader/${encodeURIComponent(minecraftVersion)}`
+    );
+    const version = versions.find((entry) => entry.loader?.stable)?.loader?.version ?? versions[0]?.loader?.version;
+    if (!version) {
+      throw new Error(`No Fabric loader version found for Minecraft ${minecraftVersion}.`);
+    }
+    return version;
+  }
+
+  private async getLatestQuiltLoaderVersion(minecraftVersion: string): Promise<string> {
+    const versions = await this.fetchJson<Array<{ loader?: { version?: string } }>>(
+      `${QUILT_META_BASE}/versions/loader/${encodeURIComponent(minecraftVersion)}`
+    );
+    const version = versions[0]?.loader?.version;
+    if (!version) {
+      throw new Error(`No Quilt loader version found for Minecraft ${minecraftVersion}.`);
+    }
+    return version;
+  }
+
+  private async resolveForgeVersion(minecraftVersion: string, loaderVersion?: string): Promise<string> {
+    if (loaderVersion) {
+      return loaderVersion.startsWith(`${minecraftVersion}-`) ? loaderVersion : `${minecraftVersion}-${loaderVersion}`;
+    }
+
+    const metadata = await this.fetchText(`${FORGE_MAVEN_BASE}net/minecraftforge/forge/maven-metadata.xml`);
+    const versions = Array.from(metadata.matchAll(/<version>([^<]+)<\/version>/g), (match) => match[1]).filter(
+      (version): version is string => !!version?.startsWith(`${minecraftVersion}-`)
+    );
+    const version = versions.at(-1);
+    if (!version) {
+      throw new Error(`No Forge loader version found for Minecraft ${minecraftVersion}.`);
+    }
+    return version;
+  }
+
+  private readVersionMetadataFromDirectory(versionDirectory: string, versionId: string): VersionMetadataInput {
+    const versionJson = join(versionDirectory, "version.json");
+    if (pathExists(versionJson)) {
+      return readJson<VersionMetadataInput>(versionJson);
+    }
+
+    const standardJson = join(versionDirectory, `${versionId}.json`);
+    if (pathExists(standardJson)) {
+      return readJson<VersionMetadataInput>(standardJson);
+    }
+
+    throw new Error(`Version metadata not found in ${versionDirectory}.`);
+  }
+
+  private hasVersionMetadata(versionDirectory: string, versionId: string): boolean {
+    return pathExists(join(versionDirectory, "version.json")) || pathExists(join(versionDirectory, `${versionId}.json`));
+  }
+
+  private findInstalledForgeVersionDirectory(minecraftVersion: string, baseDirectory: string): string {
+    const versionsDir = getVersionDir(baseDirectory);
+    const forgePrefix = `${minecraftVersion}-forge-`;
+    const candidates = Array.from(this.readDirectoryNames(versionsDir)).filter((name) => name.startsWith(forgePrefix));
+    const versionId = candidates.at(-1);
+    if (!versionId) {
+      throw new Error(`Installed Forge version for Minecraft ${minecraftVersion} not found.`);
+    }
+    return join(versionsDir, versionId);
   }
 
   private async downloadAssetObject(assetName: string, asset: AssetObject, assetsDir: string): Promise<string> {
@@ -228,16 +434,16 @@ export class Installer {
     return targetPath;
   }
 
-  async prepareVersion(versionId: string, baseDirectory: string, options?: PrepareVersionOptions): Promise<{ metadata: VersionMetadata; versionDirectory: string }> {
+  async prepareVersion(versionId: string, baseDirectory: string, options?: PrepareVersionOptions): Promise<PreparedVersion> {
     const metadata = await this.downloadVersionMetadataById(versionId, baseDirectory);
     const versionDirectory = join(getVersionDir(baseDirectory), versionId);
-    await this.downloadClientJar(metadata, versionDirectory);
+    const clientJarPath = await this.downloadClientJar(metadata, versionDirectory);
     await this.downloadLibraries(metadata, baseDirectory);
     await this.downloadAssets(metadata, baseDirectory);
     if (options?.validate ?? true) {
       await this.validateVersionFiles(metadata, baseDirectory, versionDirectory);
     }
-    return { metadata, versionDirectory };
+    return { metadata, versionDirectory, clientJarPath };
   }
 
   async installMods(options: InstallOptions): Promise<string[]> {
@@ -295,6 +501,36 @@ export class Installer {
     const workerCount = Math.min(concurrency, items.length);
     await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
     return results;
+  }
+
+  private readDirectoryNames(directory: string): string[] {
+    if (!pathExists(directory)) {
+      return [];
+    }
+
+    return readdirSync(directory, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+  }
+
+  private async fetchJson<T>(url: string): Promise<T> {
+    const text = await this.fetchText(url);
+    return JSON.parse(text) as T;
+  }
+
+  private async fetchText(url: string): Promise<string> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) {
+        throw new Error(`Failed to fetch ${url}: ${response.status}`);
+      }
+      return response.text();
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private async assertValidFile(filePath: string, expectedSha1: string | undefined, label: string): Promise<void> {
