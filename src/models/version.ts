@@ -1,6 +1,7 @@
 export interface LibraryRule {
   action: "allow" | "disallow";
-  os?: { name: string };
+  os?: { name?: string; arch?: string };
+  features?: Record<string, boolean>;
 }
 
 export interface LibraryArtifact {

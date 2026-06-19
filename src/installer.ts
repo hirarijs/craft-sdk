@@ -54,6 +54,20 @@ interface AssetIndexData {
   objects: Record<string, AssetObject>;
 }
 
+interface LauncherProfileEntry {
+  name: string;
+  type: string;
+  created: string;
+  lastUsed: string;
+  lastVersionId: string;
+}
+
+interface LauncherProfilesFile {
+  profiles?: Record<string, LauncherProfileEntry>;
+  settings?: Record<string, unknown>;
+  version?: number;
+}
+
 type VersionMetadataInput = Partial<VersionMetadata> & Pick<VersionMetadata, "id">;
 
 const DEFAULT_VERSION_MANIFEST_URL = API_ENDPOINTS[API_SOURCE.MOJANG].versionManifest;
@@ -121,6 +135,11 @@ export class Installer {
   async downloadClientJar(metadata: VersionMetadata, versionDirectory: string): Promise<string> {
     const clientJar = metadata.downloads.client;
     const jarPath = join(versionDirectory, `${metadata.id}.jar`);
+    const validation = await this.validateFile(jarPath, clientJar.sha1);
+    if (validation.valid) {
+      return jarPath;
+    }
+
     await downloadFile(clientJar.url ?? "", jarPath, this.timeoutMs);
 
     if (clientJar.sha1) {
@@ -277,6 +296,7 @@ export class Installer {
       const installerPath = join(installerDir, `forge-${forgeVersion}-installer.jar`);
       const installerUrl = `${FORGE_MAVEN_BASE}net/minecraftforge/forge/${forgeVersion}/forge-${forgeVersion}-installer.jar`;
       await downloadFile(installerUrl, installerPath, this.timeoutMs);
+      this.ensureLauncherProfiles(options.baseDirectory, options.minecraftVersion);
 
       const javaExecutable = options.javaPath ?? findJavaExecutable();
       if (!javaExecutable) {
@@ -333,7 +353,9 @@ export class Installer {
     const argumentsValue: NonNullable<VersionMetadata["arguments"]> = {
       jvm: [...(parentArguments.jvm ?? []), ...(childArguments.jvm ?? [])],
     };
-    const gameArguments = childArguments.game ?? parentArguments.game;
+    const gameArguments = childArguments.game
+      ? [...(parentArguments.game ?? []), ...childArguments.game]
+      : parentArguments.game;
     if (gameArguments) {
       argumentsValue.game = gameArguments;
     }
@@ -418,6 +440,28 @@ export class Installer {
       throw new Error(`Installed Forge version for Minecraft ${minecraftVersion} not found.`);
     }
     return join(versionsDir, versionId);
+  }
+
+  private ensureLauncherProfiles(baseDirectory: string, minecraftVersion: string): void {
+    const profilePath = join(baseDirectory, "launcher_profiles.json");
+    const now = new Date().toISOString();
+    const profileId = `craft-sdk-${minecraftVersion}`;
+    const profiles = pathExists(profilePath)
+      ? readJson<LauncherProfilesFile>(profilePath)
+      : {};
+
+    profiles.profiles ??= {};
+    profiles.settings ??= {};
+    profiles.version ??= 3;
+    profiles.profiles[profileId] ??= {
+      name: `Craft SDK ${minecraftVersion}`,
+      type: "custom",
+      created: now,
+      lastUsed: now,
+      lastVersionId: minecraftVersion,
+    };
+
+    writeJson(profilePath, profiles);
   }
 
   private async downloadAssetObject(assetName: string, asset: AssetObject, assetsDir: string): Promise<string> {

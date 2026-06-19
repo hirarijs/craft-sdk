@@ -6,7 +6,9 @@ import { getMavenArtifactPath } from "./utils/maven.js";
 import type { LaunchOptions } from "./models/options.js";
 import type { VersionMetadata } from "./models/version.js";
 
-function isRuleAllowed(rule?: { action?: string; os?: { name: string }; features?: Record<string, boolean> }): boolean {
+type ArgumentEntry = string | string[] | { rules?: Array<{ action: string; os?: { name?: string; arch?: string }; features?: Record<string, boolean> }>; value: string | string[] };
+
+function isRuleAllowed(rule?: { action?: string; os?: { name?: string; arch?: string }; features?: Record<string, boolean> }): boolean {
   if (!rule || !rule.action) {
     return true;
   }
@@ -15,16 +17,23 @@ function isRuleAllowed(rule?: { action?: string; os?: { name: string }; features
     return false;
   }
 
-  if (!rule.os || !rule.os.name) {
+  if (!rule.os) {
     return rule.action === "allow";
   }
 
-  const os = process.platform;
-  const matches = (rule.os.name === "windows" && os === "win32") || (rule.os.name === "osx" && os === "darwin") || (rule.os.name === "linux" && os === "linux");
+  const osMatches = !rule.os.name ||
+    (rule.os.name === "windows" && process.platform === "win32") ||
+    (rule.os.name === "osx" && process.platform === "darwin") ||
+    (rule.os.name === "linux" && process.platform === "linux");
+  const archMatches = !rule.os.arch ||
+    (rule.os.arch === "x86" && process.arch === "ia32") ||
+    (rule.os.arch === "x64" && process.arch === "x64") ||
+    (rule.os.arch === "arm64" && process.arch === "arm64");
+  const matches = osMatches && archMatches;
   return rule.action === "allow" ? matches : !matches;
 }
 
-function shouldIncludeEntry(entry?: { rules?: Array<{ action: string; os?: { name: string }; features?: Record<string, boolean> }> }): boolean {
+function shouldIncludeEntry(entry?: { rules?: Array<{ action: string; os?: { name?: string; arch?: string }; features?: Record<string, boolean> }> }): boolean {
   if (!entry?.rules || entry.rules.length === 0) {
     return true;
   }
@@ -43,7 +52,11 @@ function resolveArgumentEntry(value: string | string[]): string[] {
   return typeof value === "string" ? [value] : value;
 }
 
-function buildArgumentVariables(options: LaunchOptions, metadata: VersionMetadata): Record<string, string> {
+function buildArgumentVariables(options: LaunchOptions, metadata: VersionMetadata, classpath: string[], versionName = metadata.id): Record<string, string> {
+  const classpathSeparator = process.platform === "win32" ? ";" : ":";
+  const librariesDir = options.librariesDirectory ?? getLibrariesDir(options.gameDirectory);
+  const nativesDirectory = join(options.gameDirectory, "natives", metadata.id);
+
   return {
     auth_access_token: options.authSession?.accessToken ?? "0",
     auth_player_name: options.authSession?.selectedProfile?.name ?? "Player",
@@ -52,9 +65,15 @@ function buildArgumentVariables(options: LaunchOptions, metadata: VersionMetadat
     assets_index_name: metadata.assetIndex.id,
     assets_root: options.assetsDirectory,
     clientid: options.authSession?.clientToken ?? "",
+    classpath: classpath.join(classpathSeparator),
+    classpath_separator: classpathSeparator,
     game_directory: options.gameDirectory,
+    launcher_name: "craft-sdk",
+    launcher_version: "1.0.0",
+    library_directory: librariesDir,
+    natives_directory: nativesDirectory,
     user_type: "mojang",
-    version_name: metadata.id,
+    version_name: versionName,
     version_type: "release",
   };
 }
@@ -63,11 +82,10 @@ function replaceArgumentVariables(value: string, variables: Record<string, strin
   return value.replace(/\$\{([^}]+)\}/g, (match, name: string) => variables[name] ?? match);
 }
 
-function buildMetadataGameArguments(metadata: VersionMetadata, options: LaunchOptions): string[] {
+function buildMetadataArguments(argumentsList: ArgumentEntry[] | undefined, variables: Record<string, string>): string[] {
   const values: string[] = [];
-  const variables = buildArgumentVariables(options, metadata);
 
-  for (const argument of metadata.arguments?.game ?? []) {
+  for (const argument of argumentsList ?? []) {
     if (typeof argument === "string") {
       values.push(replaceArgumentVariables(argument, variables));
       continue;
@@ -86,6 +104,10 @@ function buildMetadataGameArguments(metadata: VersionMetadata, options: LaunchOp
   }
 
   return values;
+}
+
+function buildMetadataGameArguments(metadata: VersionMetadata, options: LaunchOptions, classpath: string[]): string[] {
+  return buildMetadataArguments(metadata.arguments?.game, buildArgumentVariables(options, metadata, classpath));
 }
 
 function buildDefaultGameArguments(options: LaunchOptions, metadata: VersionMetadata): string[] {
@@ -113,6 +135,11 @@ function buildDefaultGameArguments(options: LaunchOptions, metadata: VersionMeta
   return args;
 }
 
+function buildMetadataJvmArguments(metadata: VersionMetadata, options: LaunchOptions, classpath: string[]): string[] {
+  const versionName = metadata.jar ?? metadata.inheritsFrom ?? metadata.id;
+  return buildMetadataArguments(metadata.arguments?.jvm, buildArgumentVariables(options, metadata, classpath, versionName));
+}
+
 function buildClasspath(metadata: VersionMetadata, options: LaunchOptions): string[] {
   const classpath: string[] = [];
   const versionJar = options.clientJarPath ?? join(options.versionDirectory, `${metadata.jar ?? metadata.id}.jar`);
@@ -133,6 +160,7 @@ function buildClasspath(metadata: VersionMetadata, options: LaunchOptions): stri
 
 function buildArguments(options: LaunchOptions, metadata: VersionMetadata): string[] {
   const args: string[] = [];
+  const classpath = buildClasspath(metadata, options);
 
   if (options.jvmArgs) {
     args.push(...options.jvmArgs);
@@ -143,10 +171,14 @@ function buildArguments(options: LaunchOptions, metadata: VersionMetadata): stri
     if (options.memory.max) args.push(`-Xmx${options.memory.max}`);
   }
 
-  const classpath = buildClasspath(metadata, options);
-  args.push("-cp", classpath.join(process.platform === "win32" ? ";" : ":"));
+  if (metadata.arguments?.jvm) {
+    args.push(...buildMetadataJvmArguments(metadata, options, classpath));
+  } else {
+    args.push("-cp", classpath.join(process.platform === "win32" ? ";" : ":"));
+  }
+
   args.push(metadata.mainClass);
-  args.push(...(metadata.arguments?.game ? buildMetadataGameArguments(metadata, options) : buildDefaultGameArguments(options, metadata)));
+  args.push(...(metadata.arguments?.game ? buildMetadataGameArguments(metadata, options, classpath) : buildDefaultGameArguments(options, metadata)));
 
   if (options.gameArgs) {
     args.push(...options.gameArgs);
