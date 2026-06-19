@@ -13,6 +13,18 @@ export interface InstallerOptions {
   timeoutMs?: number;
 }
 
+export interface FileValidationResult {
+  filePath: string;
+  valid: boolean;
+  reason?: "missing" | "checksum_mismatch";
+  expectedSha1?: string;
+  actualSha1?: string;
+}
+
+export interface PrepareVersionOptions {
+  validate?: boolean;
+}
+
 const DEFAULT_VERSION_MANIFEST_URL = API_ENDPOINTS[API_SOURCE.MOJANG].versionManifest;
 
 export class Installer {
@@ -71,6 +83,46 @@ export class Installer {
     return jarPath;
   }
 
+  async validateFile(filePath: string, expectedSha1?: string): Promise<FileValidationResult> {
+    if (!pathExists(filePath)) {
+      const result: FileValidationResult = { filePath, valid: false, reason: "missing" };
+      if (expectedSha1) result.expectedSha1 = expectedSha1;
+      return result;
+    }
+
+    if (!expectedSha1) {
+      return { filePath, valid: true };
+    }
+
+    const actualSha1 = await sha1File(filePath);
+    if (actualSha1 !== expectedSha1) {
+      return {
+        filePath,
+        valid: false,
+        reason: "checksum_mismatch",
+        expectedSha1,
+        actualSha1,
+      };
+    }
+
+    return { filePath, valid: true, expectedSha1, actualSha1 };
+  }
+
+  async validateVersionFiles(metadata: VersionMetadata, baseDirectory: string, versionDirectory: string): Promise<void> {
+    const clientJar = join(versionDirectory, `${metadata.id}.jar`);
+    await this.assertValidFile(clientJar, metadata.downloads.client.sha1, `client jar ${metadata.id}`);
+
+    const librariesDir = getLibrariesDir(baseDirectory);
+    for (const library of metadata.libraries ?? []) {
+      const artifact = library.downloads?.artifact;
+      if (!artifact?.path) {
+        continue;
+      }
+
+      await this.assertValidFile(join(librariesDir, artifact.path), artifact.sha1, `library ${library.name}`);
+    }
+  }
+
   async downloadLibraries(metadata: VersionMetadata, baseDirectory: string): Promise<string[]> {
     const librariesDir = getLibrariesDir(baseDirectory);
     const installed: string[] = [];
@@ -91,12 +143,8 @@ export class Installer {
 
     const targetPath = join(librariesDirectory, artifact.path);
     if (pathExists(targetPath)) {
-      if (!artifact.sha1) {
-        return targetPath;
-      }
-
-      const checksum = await sha1File(targetPath);
-      if (checksum === artifact.sha1) {
+      const validation = await this.validateFile(targetPath, artifact.sha1);
+      if (validation.valid) {
         return targetPath;
       }
     }
@@ -115,11 +163,14 @@ export class Installer {
     return targetPath;
   }
 
-  async prepareVersion(versionId: string, baseDirectory: string): Promise<{ metadata: VersionMetadata; versionDirectory: string }> {
+  async prepareVersion(versionId: string, baseDirectory: string, options?: PrepareVersionOptions): Promise<{ metadata: VersionMetadata; versionDirectory: string }> {
     const metadata = await this.downloadVersionMetadataById(versionId, baseDirectory);
     const versionDirectory = join(getVersionDir(baseDirectory), versionId);
     await this.downloadClientJar(metadata, versionDirectory);
     await this.downloadLibraries(metadata, baseDirectory);
+    if (options?.validate ?? true) {
+      await this.validateVersionFiles(metadata, baseDirectory, versionDirectory);
+    }
     return { metadata, versionDirectory };
   }
 
@@ -154,5 +205,18 @@ export class Installer {
     }
 
     return getModsDir(target.gameDirectory);
+  }
+
+  private async assertValidFile(filePath: string, expectedSha1: string | undefined, label: string): Promise<void> {
+    const validation = await this.validateFile(filePath, expectedSha1);
+    if (validation.valid) {
+      return;
+    }
+
+    if (validation.reason === "checksum_mismatch") {
+      throw new Error(`${label} checksum mismatch: expected ${validation.expectedSha1}, got ${validation.actualSha1}`);
+    }
+
+    throw new Error(`${label} missing: ${filePath}`);
   }
 }

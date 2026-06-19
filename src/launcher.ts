@@ -5,9 +5,13 @@ import { getLibrariesDir } from "./platform/paths.js";
 import type { LaunchOptions } from "./models/options.js";
 import type { VersionMetadata } from "./models/version.js";
 
-function isRuleAllowed(rule?: { action?: string; os?: { name: string } }): boolean {
+function isRuleAllowed(rule?: { action?: string; os?: { name: string }; features?: Record<string, boolean> }): boolean {
   if (!rule || !rule.action) {
     return true;
+  }
+
+  if (rule.features) {
+    return false;
   }
 
   if (!rule.os || !rule.os.name) {
@@ -19,7 +23,7 @@ function isRuleAllowed(rule?: { action?: string; os?: { name: string } }): boole
   return rule.action === "allow" ? matches : !matches;
 }
 
-function shouldIncludeEntry(entry?: { rules?: Array<{ action: string; os?: { name: string } }> }): boolean {
+function shouldIncludeEntry(entry?: { rules?: Array<{ action: string; os?: { name: string }; features?: Record<string, boolean> }> }): boolean {
   if (!entry?.rules || entry.rules.length === 0) {
     return true;
   }
@@ -38,17 +42,38 @@ function resolveArgumentEntry(value: string | string[]): string[] {
   return typeof value === "string" ? [value] : value;
 }
 
-function buildMetadataGameArguments(metadata: VersionMetadata): string[] {
+function buildArgumentVariables(options: LaunchOptions, metadata: VersionMetadata): Record<string, string> {
+  return {
+    auth_access_token: options.authSession?.accessToken ?? "0",
+    auth_player_name: options.authSession?.selectedProfile?.name ?? "Player",
+    auth_uuid: options.authSession?.selectedProfile?.id ?? "0",
+    auth_xuid: "",
+    assets_index_name: metadata.assetIndex.id,
+    assets_root: options.assetsDirectory,
+    clientid: options.authSession?.clientToken ?? "",
+    game_directory: options.gameDirectory,
+    user_type: "mojang",
+    version_name: metadata.id,
+    version_type: "release",
+  };
+}
+
+function replaceArgumentVariables(value: string, variables: Record<string, string>): string {
+  return value.replace(/\$\{([^}]+)\}/g, (match, name: string) => variables[name] ?? match);
+}
+
+function buildMetadataGameArguments(metadata: VersionMetadata, options: LaunchOptions): string[] {
   const values: string[] = [];
+  const variables = buildArgumentVariables(options, metadata);
 
   for (const argument of metadata.arguments?.game ?? []) {
     if (typeof argument === "string") {
-      values.push(argument);
+      values.push(replaceArgumentVariables(argument, variables));
       continue;
     }
 
     if (Array.isArray(argument)) {
-      values.push(...argument);
+      values.push(...argument.map((value) => replaceArgumentVariables(value, variables)));
       continue;
     }
 
@@ -56,10 +81,35 @@ function buildMetadataGameArguments(metadata: VersionMetadata): string[] {
       continue;
     }
 
-    values.push(...resolveArgumentEntry(argument.value));
+    values.push(...resolveArgumentEntry(argument.value).map((value) => replaceArgumentVariables(value, variables)));
   }
 
   return values;
+}
+
+function buildDefaultGameArguments(options: LaunchOptions, metadata: VersionMetadata): string[] {
+  const args = [
+    "--username",
+    options.authSession?.selectedProfile?.name ?? "Player",
+    "--version",
+    metadata.id,
+    "--gameDir",
+    options.gameDirectory,
+    "--assetsDir",
+    options.assetsDirectory,
+    "--assetIndex",
+    metadata.assetIndex.id,
+  ];
+
+  if (options.authSession) {
+    args.push("--uuid", options.authSession.selectedProfile?.id ?? "0");
+    args.push("--accessToken", options.authSession.accessToken);
+    if (options.authSession.clientToken) {
+      args.push("--clientId", options.authSession.clientToken);
+    }
+  }
+
+  return args;
 }
 
 function buildClasspath(metadata: VersionMetadata, options: LaunchOptions): string[] {
@@ -99,21 +149,7 @@ function buildArguments(options: LaunchOptions, metadata: VersionMetadata): stri
   const classpath = buildClasspath(metadata, options);
   args.push("-cp", classpath.join(process.platform === "win32" ? ";" : ":"));
   args.push(metadata.mainClass);
-  args.push(...buildMetadataGameArguments(metadata));
-
-  args.push("--username", options.authSession?.selectedProfile?.name ?? "Player");
-  args.push("--version", metadata.id);
-  args.push("--gameDir", options.gameDirectory);
-  args.push("--assetsDir", options.assetsDirectory);
-  args.push("--assetIndex", metadata.assetIndex.id);
-
-  if (options.authSession) {
-    args.push("--uuid", options.authSession.selectedProfile?.id ?? "0");
-    args.push("--accessToken", options.authSession.accessToken);
-    if (options.authSession.clientToken) {
-      args.push("--clientId", options.authSession.clientToken);
-    }
-  }
+  args.push(...(metadata.arguments?.game ? buildMetadataGameArguments(metadata, options) : buildDefaultGameArguments(options, metadata)));
 
   if (options.gameArgs) {
     args.push(...options.gameArgs);
