@@ -4,7 +4,7 @@ import { downloadFile } from "./utils/downloader.js";
 import { sha1File } from "./utils/checksum.js";
 import type { DownloadOptions, InstallOptions } from "./models/options.js";
 import type { ModPackage, ModInstallTarget } from "./models/mod.js";
-import { getVersionDir, getModsDir, getLibrariesDir } from "./platform/paths.js";
+import { getVersionDir, getModsDir, getLibrariesDir, getAssetsDir } from "./platform/paths.js";
 import type { VersionManifest, VersionMetadata, LibraryEntry } from "./models/version.js";
 import { API_ENDPOINTS, API_SOURCE, type ApiSource } from "./constant.js";
 
@@ -25,6 +25,15 @@ export interface PrepareVersionOptions {
   validate?: boolean;
 }
 
+interface AssetObject {
+  hash: string;
+  size: number;
+}
+
+interface AssetIndexData {
+  objects: Record<string, AssetObject>;
+}
+
 const DEFAULT_VERSION_MANIFEST_URL = API_ENDPOINTS[API_SOURCE.MOJANG].versionManifest;
 
 export class Installer {
@@ -42,6 +51,10 @@ export class Installer {
 
   getLibrariesBase(): string {
     return API_ENDPOINTS[this.apiSource].librariesBase;
+  }
+
+  getAssetsBase(): string {
+    return API_ENDPOINTS[this.apiSource].assetsBase;
   }
 
   async downloadMinecraftVersionManifest(targetDirectory: string): Promise<VersionManifest> {
@@ -121,6 +134,44 @@ export class Installer {
 
       await this.assertValidFile(join(librariesDir, artifact.path), artifact.sha1, `library ${library.name}`);
     }
+
+    await this.validateAssets(metadata, baseDirectory);
+  }
+
+  async downloadAssetIndex(metadata: VersionMetadata, baseDirectory: string): Promise<string> {
+    const indexesDir = join(getAssetsDir(baseDirectory), "indexes");
+    const indexPath = join(indexesDir, `${metadata.assetIndex.id}.json`);
+    const validation = await this.validateFile(indexPath, metadata.assetIndex.sha1);
+    if (validation.valid) {
+      return indexPath;
+    }
+
+    ensureDir(indexesDir);
+    await downloadFile(metadata.assetIndex.url, indexPath, this.timeoutMs);
+    await this.assertValidFile(indexPath, metadata.assetIndex.sha1, `asset index ${metadata.assetIndex.id}`);
+    return indexPath;
+  }
+
+  async downloadAssets(metadata: VersionMetadata, baseDirectory: string): Promise<string[]> {
+    const indexPath = await this.downloadAssetIndex(metadata, baseDirectory);
+    const assetIndex = readJson<AssetIndexData>(indexPath);
+    const assetsDir = getAssetsDir(baseDirectory);
+    const assets = Object.entries(assetIndex.objects);
+
+    return this.mapWithConcurrency(assets, 16, async ([assetName, asset]) => {
+      return this.downloadAssetObject(assetName, asset, assetsDir);
+    });
+  }
+
+  async validateAssets(metadata: VersionMetadata, baseDirectory: string): Promise<void> {
+    const assetsDir = getAssetsDir(baseDirectory);
+    const indexPath = join(assetsDir, "indexes", `${metadata.assetIndex.id}.json`);
+    await this.assertValidFile(indexPath, metadata.assetIndex.sha1, `asset index ${metadata.assetIndex.id}`);
+
+    const assetIndex = readJson<AssetIndexData>(indexPath);
+    for (const [assetName, asset] of Object.entries(assetIndex.objects)) {
+      await this.assertValidFile(this.getAssetObjectPath(assetsDir, asset.hash), asset.hash, `asset ${assetName}`);
+    }
   }
 
   async downloadLibraries(metadata: VersionMetadata, baseDirectory: string): Promise<string[]> {
@@ -163,11 +214,26 @@ export class Installer {
     return targetPath;
   }
 
+  private async downloadAssetObject(assetName: string, asset: AssetObject, assetsDir: string): Promise<string> {
+    const targetPath = this.getAssetObjectPath(assetsDir, asset.hash);
+    const validation = await this.validateFile(targetPath, asset.hash);
+    if (validation.valid) {
+      return targetPath;
+    }
+
+    ensureDir(dirname(targetPath));
+    const path = `${asset.hash.slice(0, 2)}/${asset.hash}`;
+    await downloadFile(`${this.getAssetsBase()}${path}`, targetPath, this.timeoutMs);
+    await this.assertValidFile(targetPath, asset.hash, `asset ${assetName}`);
+    return targetPath;
+  }
+
   async prepareVersion(versionId: string, baseDirectory: string, options?: PrepareVersionOptions): Promise<{ metadata: VersionMetadata; versionDirectory: string }> {
     const metadata = await this.downloadVersionMetadataById(versionId, baseDirectory);
     const versionDirectory = join(getVersionDir(baseDirectory), versionId);
     await this.downloadClientJar(metadata, versionDirectory);
     await this.downloadLibraries(metadata, baseDirectory);
+    await this.downloadAssets(metadata, baseDirectory);
     if (options?.validate ?? true) {
       await this.validateVersionFiles(metadata, baseDirectory, versionDirectory);
     }
@@ -205,6 +271,30 @@ export class Installer {
     }
 
     return getModsDir(target.gameDirectory);
+  }
+
+  private getAssetObjectPath(assetsDir: string, hash: string): string {
+    return join(assetsDir, "objects", hash.slice(0, 2), hash);
+  }
+
+  private async mapWithConcurrency<T, R>(items: T[], concurrency: number, worker: (item: T) => Promise<R>): Promise<R[]> {
+    const results = new Array<R>(items.length);
+    let index = 0;
+
+    async function runWorker() {
+      while (index < items.length) {
+        const currentIndex = index;
+        index += 1;
+        const item = items[currentIndex];
+        if (item) {
+          results[currentIndex] = await worker(item);
+        }
+      }
+    }
+
+    const workerCount = Math.min(concurrency, items.length);
+    await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+    return results;
   }
 
   private async assertValidFile(filePath: string, expectedSha1: string | undefined, label: string): Promise<void> {
