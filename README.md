@@ -76,6 +76,51 @@ await sdk.installer.installMods({
 const exitCode = await sdk.launcher.launch(launchOptions, metadata);
 ```
 
+### Microsoft sign-in
+
+Register an application in Microsoft Entra ID / Azure portal, then pass the app `clientId` to the SDK. Device-code sign-in is the simplest flow for launchers because it does not require a local redirect server:
+
+```ts
+const sdk = new CraftSDK({
+  microsoftAuth: {
+    clientId: "your-microsoft-app-client-id",
+    onVerification: ({ verificationUri, userCode, message }) => {
+      console.log(message);
+      console.log(`Open ${verificationUri} and enter ${userCode}`);
+    },
+  },
+});
+
+const session = await sdk.auth.loginWithMicrosoftDeviceCode();
+console.log(session.selectedProfile?.name);
+```
+
+`loginWithMicrosoftDeviceCode()` automatically exchanges the Microsoft token through Xbox Live, XSTS, and Minecraft Services, then saves a launcher-ready session. `playGame()` can use the same `microsoftAuth` options when no saved session exists:
+
+```ts
+await sdk.playGame({
+  version: "1.20.1",
+  gameDirectory: ".minecraft",
+  loader: "fabric",
+});
+```
+
+For redirect-based apps, use:
+
+```ts
+const authUrl = sdk.auth.getMicrosoftAuthorizationUrl({
+  clientId: "your-microsoft-app-client-id",
+  redirectUri: "http://localhost:3000/callback",
+  state: "csrf-token",
+});
+
+// After your app receives ?code=...
+await sdk.auth.loginWithMicrosoftAuthorizationCode(code, {
+  clientId: "your-microsoft-app-client-id",
+  redirectUri: "http://localhost:3000/callback",
+});
+```
+
 ## API Reference
 
 ### CraftSDK Options
@@ -85,6 +130,7 @@ interface CraftSdkOptions {
   apiSource?: "mojang" | "bmclapi";  // Default: "mojang"
   timeoutMs?: number;                 // HTTP timeout
   sessionFile?: string;               // Session persistence path
+  microsoftAuth?: MicrosoftDeviceCodeLoginOptions;
 }
 ```
 
@@ -103,6 +149,7 @@ interface PlayGameOptions {
   jvmArgs?: string[];                 // Additional JVM arguments
   gameArgs?: string[];                // Additional game arguments
   javaPath?: string;                  // Custom Java executable path
+  microsoftAuth?: MicrosoftDeviceCodeLoginOptions;
   mods?: Array<{
     id: string;
     name: string;

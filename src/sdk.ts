@@ -1,4 +1,4 @@
-import { AuthManager, type AuthOptions } from "./auth.js";
+import { AuthManager, type AuthOptions, type MicrosoftDeviceCodeLoginOptions } from "./auth.js";
 import { Downloader, type DownloaderOptions } from "./downloader.js";
 import { Installer, type InstallerOptions } from "./installer.js";
 import { GameLauncher } from "./launcher.js";
@@ -11,6 +11,7 @@ export interface CraftSdkOptions {
   apiSource?: ApiSource;
   timeoutMs?: number;
   sessionFile?: string;
+  microsoftAuth?: MicrosoftDeviceCodeLoginOptions;
 }
 
 export interface PlayGameOptions {
@@ -26,6 +27,7 @@ export interface PlayGameOptions {
   jvmArgs?: string[];
   gameArgs?: string[];
   javaPath?: string;
+  microsoftAuth?: MicrosoftDeviceCodeLoginOptions;
   mods?: Array<{ id: string; name: string; version: string; sourceUrl: string; fileName?: string; loader?: string }>;
 }
 
@@ -34,10 +36,13 @@ export class CraftSDK {
   public downloader: Downloader;
   public installer: Installer;
   public launcher: GameLauncher;
+  private microsoftAuth?: MicrosoftDeviceCodeLoginOptions;
 
   constructor(options?: CraftSdkOptions) {
     const authOptions: AuthOptions = {};
     if (options?.sessionFile) authOptions.sessionFile = options.sessionFile;
+    if (options?.microsoftAuth) authOptions.microsoftAuth = options.microsoftAuth;
+    if (options?.microsoftAuth) this.microsoftAuth = options.microsoftAuth;
 
     const sharedOptions: DownloaderOptions & InstallerOptions = {
       apiSource: options?.apiSource ?? API_SOURCE.MOJANG,
@@ -57,6 +62,7 @@ export class CraftSDK {
 
     // 1. Handle authentication
     let session = this.auth.loadSession();
+    const microsoftAuth = options.microsoftAuth ?? this.microsoftAuth;
     if (options.accessToken && options.clientToken && options.profileId && options.profileName) {
       session = await this.auth.loginWithToken(
         options.accessToken,
@@ -64,6 +70,16 @@ export class CraftSDK {
         options.profileId,
         options.profileName
       );
+    }
+    if (session && this.auth.isSessionExpired(session)) {
+      if (session.refreshToken) {
+        session = await this.auth.refreshMicrosoftSession(session, microsoftAuth);
+      } else {
+        session = undefined;
+      }
+    }
+    if (!session && microsoftAuth) {
+      session = await this.auth.loginWithMicrosoftDeviceCode(microsoftAuth);
     }
     if (!session) {
       throw new Error("No valid session found. Please provide authentication credentials.");

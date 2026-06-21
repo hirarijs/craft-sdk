@@ -1,6 +1,10 @@
 export interface AuthSession {
   accessToken: string;
   clientToken: string;
+  provider?: "external" | "microsoft";
+  expiresAt?: number;
+  refreshToken?: string;
+  xuid?: string;
   selectedProfile?: {
     id: string;
     name: string;
