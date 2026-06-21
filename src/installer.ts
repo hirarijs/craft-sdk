@@ -4,6 +4,7 @@ import { ensureDir, pathExists, readJson, writeJson } from "./utils/fs.js";
 import { downloadFile } from "./utils/downloader.js";
 import { sha1File } from "./utils/checksum.js";
 import { getMavenArtifactPath } from "./utils/maven.js";
+import { resolveApiUrl } from "./utils/api.js";
 import { findJavaExecutable } from "./platform/java.js";
 import { runJavaProcess } from "./platform/process.js";
 import type { DownloadOptions, InstallOptions } from "./models/options.js";
@@ -71,9 +72,6 @@ interface LauncherProfilesFile {
 type VersionMetadataInput = Partial<VersionMetadata> & Pick<VersionMetadata, "id">;
 
 const DEFAULT_VERSION_MANIFEST_URL = API_ENDPOINTS[API_SOURCE.MOJANG].versionManifest;
-const FABRIC_META_BASE = "https://meta.fabricmc.net/v2";
-const QUILT_META_BASE = "https://meta.quiltmc.org/v3";
-const FORGE_MAVEN_BASE = "https://maven.minecraftforge.net/";
 
 export class Installer {
   private apiSource: ApiSource;
@@ -94,6 +92,18 @@ export class Installer {
 
   getAssetsBase(): string {
     return API_ENDPOINTS[this.apiSource].assetsBase;
+  }
+
+  getFabricMetaBase(): string {
+    return API_ENDPOINTS[this.apiSource].fabricMetaBase;
+  }
+
+  getQuiltMetaBase(): string {
+    return API_ENDPOINTS[this.apiSource].quiltMetaBase;
+  }
+
+  getForgeMavenBase(): string {
+    return API_ENDPOINTS[this.apiSource].forgeMavenBase;
   }
 
   async installLoader(options: InstallLoaderOptions): Promise<PreparedVersion> {
@@ -118,7 +128,7 @@ export class Installer {
   async downloadVersionMetadata(url: string, targetDirectory: string): Promise<VersionMetadata> {
     ensureDir(targetDirectory);
     const targetPath = join(targetDirectory, "version.json");
-    await downloadFile(url, targetPath, this.timeoutMs);
+    await downloadFile(this.resolveUrl(url), targetPath, this.timeoutMs);
     return readJson<VersionMetadata>(targetPath);
   }
 
@@ -129,7 +139,7 @@ export class Installer {
       throw new Error(`Version ${versionId} not found in manifest.`);
     }
     const versionDir = join(getVersionDir(baseDirectory), versionId);
-    return this.downloadVersionMetadata(versionEntry.url, versionDir);
+    return this.downloadVersionMetadata(this.resolveUrl(versionEntry.url), versionDir);
   }
 
   async downloadClientJar(metadata: VersionMetadata, versionDirectory: string): Promise<string> {
@@ -140,7 +150,7 @@ export class Installer {
       return jarPath;
     }
 
-    await downloadFile(clientJar.url ?? "", jarPath, this.timeoutMs);
+    await downloadFile(this.resolveUrl(clientJar.url ?? ""), jarPath, this.timeoutMs);
 
     if (clientJar.sha1) {
       const checksum = await sha1File(jarPath);
@@ -201,7 +211,7 @@ export class Installer {
     }
 
     ensureDir(indexesDir);
-    await downloadFile(metadata.assetIndex.url, indexPath, this.timeoutMs);
+    await downloadFile(this.resolveUrl(metadata.assetIndex.url), indexPath, this.timeoutMs);
     await this.assertValidFile(indexPath, metadata.assetIndex.sha1, `asset index ${metadata.assetIndex.id}`);
     return indexPath;
   }
@@ -253,7 +263,8 @@ export class Installer {
     }
 
     ensureDir(dirname(targetPath));
-    const url = artifact?.url ?? `${library.url ?? this.getLibrariesBase()}${artifactPath}`;
+    const baseUrl = this.ensureTrailingSlash(this.resolveUrl(library.url ?? this.getLibrariesBase()));
+    const url = artifact?.url ? this.resolveUrl(artifact.url) : `${baseUrl}${artifactPath}`;
     await downloadFile(url, targetPath, this.timeoutMs);
 
     if (artifact?.sha1) {
@@ -270,7 +281,7 @@ export class Installer {
     const baseVersion = await this.prepareVersion(options.minecraftVersion, options.baseDirectory, options);
     const loaderVersion = options.loaderVersion ?? await this.getLatestFabricLoaderVersion(options.minecraftVersion);
     const metadata = await this.fetchJson<VersionMetadataInput>(
-      `${FABRIC_META_BASE}/versions/loader/${encodeURIComponent(options.minecraftVersion)}/${encodeURIComponent(loaderVersion)}/profile/json`
+      `${this.getFabricMetaBase()}/versions/loader/${encodeURIComponent(options.minecraftVersion)}/${encodeURIComponent(loaderVersion)}/profile/json`
     );
     return this.installProfileLoaderVersion(metadata, baseVersion, options.baseDirectory, options);
   }
@@ -279,7 +290,7 @@ export class Installer {
     const baseVersion = await this.prepareVersion(options.minecraftVersion, options.baseDirectory, options);
     const loaderVersion = options.loaderVersion ?? await this.getLatestQuiltLoaderVersion(options.minecraftVersion);
     const metadata = await this.fetchJson<VersionMetadataInput>(
-      `${QUILT_META_BASE}/versions/loader/${encodeURIComponent(options.minecraftVersion)}/${encodeURIComponent(loaderVersion)}/profile/json`
+      `${this.getQuiltMetaBase()}/versions/loader/${encodeURIComponent(options.minecraftVersion)}/${encodeURIComponent(loaderVersion)}/profile/json`
     );
     return this.installProfileLoaderVersion(metadata, baseVersion, options.baseDirectory, options);
   }
@@ -294,7 +305,7 @@ export class Installer {
       const installerDir = join(options.baseDirectory, "installers");
       ensureDir(installerDir);
       const installerPath = join(installerDir, `forge-${forgeVersion}-installer.jar`);
-      const installerUrl = `${FORGE_MAVEN_BASE}net/minecraftforge/forge/${forgeVersion}/forge-${forgeVersion}-installer.jar`;
+      const installerUrl = `${this.getForgeMavenBase()}net/minecraftforge/forge/${forgeVersion}/forge-${forgeVersion}-installer.jar`;
       await downloadFile(installerUrl, installerPath, this.timeoutMs);
       this.ensureLauncherProfiles(options.baseDirectory, options.minecraftVersion);
 
@@ -377,7 +388,7 @@ export class Installer {
 
   private async getLatestFabricLoaderVersion(minecraftVersion: string): Promise<string> {
     const versions = await this.fetchJson<Array<{ loader?: { version?: string; stable?: boolean } }>>(
-      `${FABRIC_META_BASE}/versions/loader/${encodeURIComponent(minecraftVersion)}`
+      `${this.getFabricMetaBase()}/versions/loader/${encodeURIComponent(minecraftVersion)}`
     );
     const version = versions.find((entry) => entry.loader?.stable)?.loader?.version ?? versions[0]?.loader?.version;
     if (!version) {
@@ -388,7 +399,7 @@ export class Installer {
 
   private async getLatestQuiltLoaderVersion(minecraftVersion: string): Promise<string> {
     const versions = await this.fetchJson<Array<{ loader?: { version?: string } }>>(
-      `${QUILT_META_BASE}/versions/loader/${encodeURIComponent(minecraftVersion)}`
+      `${this.getQuiltMetaBase()}/versions/loader/${encodeURIComponent(minecraftVersion)}`
     );
     const version = versions[0]?.loader?.version;
     if (!version) {
@@ -402,7 +413,7 @@ export class Installer {
       return loaderVersion.startsWith(`${minecraftVersion}-`) ? loaderVersion : `${minecraftVersion}-${loaderVersion}`;
     }
 
-    const metadata = await this.fetchText(`${FORGE_MAVEN_BASE}net/minecraftforge/forge/maven-metadata.xml`);
+    const metadata = await this.fetchText(`${this.getForgeMavenBase()}net/minecraftforge/forge/maven-metadata.xml`);
     const versions = Array.from(metadata.matchAll(/<version>([^<]+)<\/version>/g), (match) => match[1]).filter(
       (version): version is string => !!version?.startsWith(`${minecraftVersion}-`)
     );
@@ -564,17 +575,26 @@ export class Installer {
   }
 
   private async fetchText(url: string): Promise<string> {
+    const resolvedUrl = this.resolveUrl(url);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await fetch(url, { signal: controller.signal });
+      const response = await fetch(resolvedUrl, { signal: controller.signal });
       if (!response.ok) {
-        throw new Error(`Failed to fetch ${url}: ${response.status}`);
+        throw new Error(`Failed to fetch ${resolvedUrl}: ${response.status}`);
       }
       return response.text();
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  private resolveUrl(url: string): string {
+    return resolveApiUrl(url, this.apiSource);
+  }
+
+  private ensureTrailingSlash(url: string): string {
+    return url.endsWith("/") ? url : `${url}/`;
   }
 
   private async assertValidFile(filePath: string, expectedSha1: string | undefined, label: string): Promise<void> {

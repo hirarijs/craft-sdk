@@ -1,5 +1,6 @@
 import { downloadFile } from "./utils/downloader.js";
 import { API_ENDPOINTS, API_SOURCE, type ApiSource } from "./constant.js";
+import { resolveApiUrl } from "./utils/api.js";
 
 export interface DownloaderOptions {
   apiSource?: ApiSource;
@@ -20,7 +21,7 @@ export class Downloader {
   }
 
   async download(url: string, targetPath: string): Promise<string> {
-    await downloadFile(url, targetPath, this.timeoutMs);
+    await downloadFile(resolveApiUrl(url, this.apiSource), targetPath, this.timeoutMs);
     return targetPath;
   }
 

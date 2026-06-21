@@ -46,7 +46,7 @@ export async function runLaunchTest(config: LaunchTestConfig): Promise<number> {
   console.log(`Java: ${javaPath}`);
 
   const sdk = new CraftSDK({
-    apiSource: API_SOURCE.MOJANG,
+    apiSource: API_SOURCE.BMCLAPI,
     sessionFile: "./craft-sdk-session.json",
     timeoutMs: 120000,
   });

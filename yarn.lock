@@ -14,6 +14,16 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@hirarijs/craft-sdk@workspace:.":
+  version: 0.0.0-use.local
+  resolution: "@hirarijs/craft-sdk@workspace:."
+  dependencies:
+    "@types/node": "npm:^25.9.3"
+    ts-node: "npm:^10.9.1"
+    typescript: "npm:^6.0.3"
+  languageName: unknown
+  linkType: soft
+
 "@jridgewell/resolve-uri@npm:^3.0.3":
   version: 3.1.2
   resolution: "@jridgewell/resolve-uri@npm:3.1.2"
@@ -99,16 +109,6 @@ __metadata:
   checksum: 10c0/070ff801a9d236a6caa647507bdcc7034530604844d64408149a26b9e87c2f97650055c0f049abd1efc024b334635c01f29e0b632b371ac3f26130f4cf65997a
   languageName: node
   linkType: hard
-
-"craft-sdk@workspace:.":
-  version: 0.0.0-use.local
-  resolution: "craft-sdk@workspace:."
-  dependencies:
-    "@types/node": "npm:^25.9.3"
-    ts-node: "npm:^10.9.1"
-    typescript: "npm:^6.0.3"
-  languageName: unknown
-  linkType: soft
 
 "create-require@npm:^1.1.0":
   version: 1.1.1
