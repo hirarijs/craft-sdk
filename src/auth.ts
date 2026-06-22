@@ -5,40 +5,119 @@ const DEFAULT_MICROSOFT_TENANT = "consumers";
 const DEFAULT_MICROSOFT_SCOPES = ["XboxLive.signin", "offline_access"];
 const MINECRAFT_SERVICES_BASE = "https://api.minecraftservices.com";
 
+/** `AuthManager` 构造函数选项 */
 export interface AuthOptions {
+  /**
+   * 会话文件路径，用于持久化保存 `AuthSession`。
+   * 每次登录成功后自动写入，下次初始化时自动加载。
+   * @default "craft-sdk-session.json"
+   */
   sessionFile?: string;
+  /** Microsoft OAuth 默认配置，可在各方法调用时覆盖 */
   microsoftAuth?: MicrosoftAuthOptions;
 }
 
+/** Microsoft OAuth 应用配置 */
 export interface MicrosoftAuthOptions {
+  /**
+   * Azure 应用的客户端 ID（也称 Application ID）。
+   * 在 Azure 门户 → 应用注册中获取。必填。
+   */
   clientId?: string;
+  /**
+   * Azure 租户 ID，用于限制可登录的账号范围。
+   * @default "consumers"（允许所有个人 Microsoft 账号）
+   */
   tenantId?: string;
+  /**
+   * OAuth 授权码流程的重定向 URI，需与 Azure 应用注册中一致。
+   * 设备码流程不需要此字段。
+   */
   redirectUri?: string;
+  /**
+   * 机密客户端应用的客户端密钥（Client Secret）。
+   * 公共客户端（桌面/移动应用）通常不需要此字段。
+   */
   clientSecret?: string;
+  /**
+   * OAuth 权限范围。
+   * @default ["XboxLive.signin", "offline_access"]
+   */
   scopes?: string[];
+  /**
+   * 启动器客户端标识，会写入 `AuthSession.clientToken`。
+   * 默认与 `clientId` 相同。
+   */
   clientToken?: string;
+  /**
+   * 是否在登录后验证账号是否拥有 Minecraft: Java Edition。
+   * 开启后若账号未购买游戏会抛出错误。
+   * @default true
+   */
   validateEntitlements?: boolean;
 }
 
+/**
+ * Microsoft 设备码登录凭据，通过 `startMicrosoftDeviceCodeLogin` 获取。
+ * 需要将 `userCode` 展示给用户，引导其在 `verificationUri` 完成授权。
+ */
 export interface MicrosoftDeviceCode {
+  /** 用于轮询的设备码，仅供 SDK 内部使用 */
   deviceCode: string;
+  /**
+   * 向用户展示的验证码（8 位字母组合，如 `"ABCD-1234"`）。
+   * 用户在 `verificationUri` 页面输入此码完成授权。
+   */
   userCode: string;
+  /** 用户需访问的授权页面 URL，通常为 `https://microsoft.com/devicelogin` */
   verificationUri: string;
+  /** 已预填 `userCode` 的完整验证 URL，用户点击即可直接跳转授权（可选） */
   verificationUriComplete?: string;
+  /** 设备码有效期（秒） */
   expiresIn: number;
+  /** 设备码过期时间（毫秒时间戳） */
   expiresAt: number;
+  /** 建议的轮询间隔（秒），默认为 5 秒 */
   interval: number;
+  /** Microsoft 提供的用户引导消息，可直接向用户展示 */
   message: string;
 }
 
+/** `loginWithMicrosoftDeviceCode` 的选项，继承自 `MicrosoftAuthOptions` */
 export interface MicrosoftDeviceCodeLoginOptions extends MicrosoftAuthOptions {
+  /**
+   * 设备码就绪后的回调，用于向用户展示验证码和跳转链接。
+   * @example
+   * ```ts
+   * onVerification: (code) => {
+   *   console.log(`请访问 ${code.verificationUri} 并输入验证码：${code.userCode}`);
+   * }
+   * ```
+   */
   onVerification?: (deviceCode: MicrosoftDeviceCode) => void | Promise<void>;
+  /**
+   * 用于取消登录轮询的 `AbortSignal`。
+   * 调用 `controller.abort()` 后会立即停止等待并抛出错误。
+   */
   signal?: AbortSignal;
 }
 
+/** `getMicrosoftAuthorizationUrl` 的选项，用于授权码（浏览器重定向）流程 */
 export interface MicrosoftAuthorizationUrlOptions extends MicrosoftAuthOptions {
+  /**
+   * OAuth `state` 参数，用于防范 CSRF 攻击。
+   * 建议每次生成随机值并在回调时校验。
+   */
   state?: string;
+  /**
+   * 登录交互方式。
+   * - `"login"`：强制要求用户输入凭据，即使已登录也会重新认证。
+   * - `"none"`：静默登录，若需要交互则报错。
+   * - `"consent"`：强制要求用户重新授权权限。
+   * - `"select_account"`：要求用户选择账号。
+   */
   prompt?: string;
+  /** 预填的 Microsoft 账号邮箱，减少用户输入步骤 */
   loginHint?: string;
 }
 
@@ -123,6 +202,14 @@ class AuthRequestError extends Error {
   }
 }
 
+/**
+ * 身份验证管理器，负责 Minecraft 账号的登录、会话持久化和令牌刷新。
+ *
+ * 支持三种登录方式：
+ * 1. **令牌直登**（`loginWithToken`）：已有 accessToken 时直接构造会话。
+ * 2. **Microsoft 设备码**（`loginWithMicrosoftDeviceCode`）：在无浏览器环境下完成 Microsoft OAuth。
+ * 3. **Microsoft 授权码**（`loginWithMicrosoftAuthorizationCode`）：在有浏览器的应用中完成 OAuth 重定向流程。
+ */
 export class AuthManager {
   private sessionFile: string;
   private microsoftAuth?: MicrosoftAuthOptions;
@@ -132,6 +219,15 @@ export class AuthManager {
     if (options?.microsoftAuth) this.microsoftAuth = options.microsoftAuth;
   }
 
+  /**
+   * 使用已有的 Minecraft 令牌直接创建并保存会话（不经过 Microsoft 验证）。
+   * 适合已从其他渠道（第三方登录服务、正版启动器）获取令牌的场景。
+   *
+   * @param accessToken Minecraft 访问令牌
+   * @param clientToken 启动器客户端标识符
+   * @param profileId 玩家 UUID（不含连字符）
+   * @param profileName 玩家显示名称
+   */
   async loginWithToken(accessToken: string, clientToken: string, profileId: string, profileName: string): Promise<AuthSession> {
     const session: AuthSession = {
       accessToken,
@@ -145,6 +241,11 @@ export class AuthManager {
     return session;
   }
 
+  /**
+   * 生成 Microsoft OAuth 授权页面 URL（授权码流程）。
+   * 用于有浏览器的场景：将用户重定向至此 URL，授权后 Microsoft 会携带 `code` 参数回调到 `redirectUri`。
+   * 需要 `redirectUri` 已在 Azure 应用中注册。
+   */
   getMicrosoftAuthorizationUrl(options?: MicrosoftAuthorizationUrlOptions): string {
     const resolved = this.resolveMicrosoftOptions(options);
     if (!resolved.redirectUri) {
@@ -162,6 +263,11 @@ export class AuthManager {
     return url.toString();
   }
 
+  /**
+   * 发起 Microsoft 设备码登录流程的第一步：请求设备码。
+   * 适合需要手动控制流程（如自定义轮询逻辑）的场景。
+   * 一般情况下直接使用 `loginWithMicrosoftDeviceCode` 更方便。
+   */
   async startMicrosoftDeviceCodeLogin(options?: MicrosoftAuthOptions): Promise<MicrosoftDeviceCode> {
     const resolved = this.resolveMicrosoftOptions(options);
     const response = await this.postMicrosoftForm<MicrosoftDeviceCodeResponse>(resolved, "devicecode", {
@@ -181,6 +287,13 @@ export class AuthManager {
     };
   }
 
+  /**
+   * 完整的 Microsoft 设备码登录流程（推荐用于 CLI 或桌面应用）：
+   * 1. 请求设备码并触发 `onVerification` 回调（向用户展示验证码）。
+   * 2. 自动轮询直到用户完成授权或超时。
+   * 3. 依次完成 Xbox Live → XSTS → Minecraft Services 认证链。
+   * 4. 获取 Minecraft 档案并保存会话到文件。
+   */
   async loginWithMicrosoftDeviceCode(options?: MicrosoftDeviceCodeLoginOptions): Promise<AuthSession> {
     const resolved = this.resolveMicrosoftOptions(options);
     const deviceCode = await this.startMicrosoftDeviceCodeLogin(resolved);
@@ -190,6 +303,13 @@ export class AuthManager {
     return this.createMinecraftSessionFromMicrosoftToken(token, resolved);
   }
 
+  /**
+   * 使用授权码换取 Minecraft 会话（授权码流程的第二步）。
+   * 在 `redirectUri` 收到回调后，从 URL 参数中提取 `code` 并传入此方法。
+   * 需要 `redirectUri` 已在 Azure 应用中注册。
+   *
+   * @param code 从 OAuth 回调 URL 的 `code` 参数中获取的授权码
+   */
   async loginWithMicrosoftAuthorizationCode(code: string, options?: MicrosoftAuthOptions): Promise<AuthSession> {
     const resolved = this.resolveMicrosoftOptions(options);
     if (!resolved.redirectUri) {
@@ -209,6 +329,12 @@ export class AuthManager {
     return this.createMinecraftSessionFromMicrosoftToken(token, resolved);
   }
 
+  /**
+   * 使用已有的 Microsoft access token 直接登录 Minecraft（跳过 OAuth 授权步骤）。
+   * 适合外部已完成 Microsoft 认证并持有有效 access token 的场景。
+   *
+   * @param accessToken 有效的 Microsoft access token
+   */
   async loginWithMicrosoftAccessToken(accessToken: string, options?: MicrosoftAuthOptions): Promise<AuthSession> {
     const resolved = this.resolveMicrosoftOptions(options);
     return this.createMinecraftSessionFromMicrosoftToken({
@@ -218,6 +344,13 @@ export class AuthManager {
     }, resolved);
   }
 
+  /**
+   * 使用 refresh token 刷新 Microsoft 会话，获取新的 access token。
+   * 会自动从 `session.refreshToken` 读取刷新令牌，无需手动传入。
+   * 通常在 `isSessionExpired` 返回 true 且会话含有 `refreshToken` 时调用。
+   *
+   * @param session 要刷新的会话，留空时读取 sessionFile 中保存的会话
+   */
   async refreshMicrosoftSession(session?: AuthSession, options?: MicrosoftAuthOptions): Promise<AuthSession> {
     const current = session ?? this.loadSession();
     if (!current) {
@@ -243,6 +376,13 @@ export class AuthManager {
     return this.createMinecraftSessionFromMicrosoftToken(token, resolved);
   }
 
+  /**
+   * 判断会话是否已过期或即将过期。
+   * 返回 `true` 时应调用 `refreshMicrosoftSession`（有 refreshToken）或重新登录。
+   *
+   * @param session 要检查的会话，留空时视为已过期（返回 true）
+   * @param skewMs 提前判定过期的缓冲时间（毫秒），防止在即将过期时仍然使用。默认 60000（1 分钟）
+   */
   isSessionExpired(session?: AuthSession, skewMs = 60000): boolean {
     if (!session) {
       return true;
@@ -253,10 +393,12 @@ export class AuthManager {
     return Date.now() + skewMs >= session.expiresAt;
   }
 
+  /** 将会话写入 sessionFile，覆盖已有内容 */
   saveSession(session: AuthSession): void {
     writeJson(this.sessionFile, session);
   }
 
+  /** 从 sessionFile 读取已保存的会话，文件不存在时返回 `undefined` */
   loadSession(): AuthSession | undefined {
     if (!pathExists(this.sessionFile)) {
       return undefined;
@@ -264,6 +406,11 @@ export class AuthManager {
     return readJson<AuthSession>(this.sessionFile);
   }
 
+  /**
+   * 创建一个简单的用户档案对象，可与会话关联。
+   * @param username 玩家用户名
+   * @param session 可选的关联会话
+   */
   createProfile(username: string, session?: AuthSession): UserProfile {
     const profile: UserProfile = { username };
     if (session) profile.session = session;

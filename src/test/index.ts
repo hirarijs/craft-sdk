@@ -13,8 +13,13 @@ function printUsage(): void {
   console.log("Usage: yarn test [vanilla|fabric|forge|all]");
   console.log("");
   console.log("Environment overrides:");
-  console.log("  MC_VERSION=1.20.1");
-  console.log("  MC_GAME_DIR=.minecraft");
+  console.log("  MC_VERSION=1.20.1          Minecraft version");
+  console.log("  MC_GAME_DIR=.minecraft     Base install directory");
+  console.log("  MC_RUNTIME_DIR=            Runtime dir (saves, config, etc.)");
+  console.log("  MC_ASSETS_DIR=             Assets directory");
+  console.log("  MC_LIBRARIES_DIR=          Libraries directory");
+  console.log("  MC_VERSIONS_DIR=           Versions directory");
+  console.log("  MC_MODS_DIR=               Mods directory");
   console.log("  FABRIC_LOADER_VERSION=0.16.14");
   console.log("  FORGE_LOADER_VERSION=47.4.0 or 1.20.1-47.4.0");
 }

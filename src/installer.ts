@@ -18,59 +18,127 @@ import { getVersionDir, getModsDir, getLibrariesDir, getAssetsDir } from "./plat
 import type { VersionManifest, VersionMetadata, LibraryEntry } from "./models/version.js";
 import { API_ENDPOINTS, API_SOURCE, type ApiSource } from "./constant.js";
 
+/** `Installer` 构造函数选项 */
 export interface InstallerOptions extends DownloadProcessOptions {
+  /**
+   * API 来源，决定版本清单、资源、库等的下载地址。
+   * @default API_SOURCE.MOJANG
+   */
   apiSource?: ApiSource;
+  /**
+   * 单个 HTTP 请求超时时间（毫秒）。
+   * @default 30000
+   */
   timeoutMs?: number;
 }
 
+/** 单个文件的校验结果 */
 export interface FileValidationResult {
+  /** 被校验文件的绝对路径 */
   filePath: string;
+  /** 是否通过校验 */
   valid: boolean;
+  /**
+   * 未通过时的原因：
+   * - `"missing"`：文件不存在
+   * - `"checksum_mismatch"`：SHA1 不匹配
+   */
   reason?: "missing" | "checksum_mismatch";
+  /** 期望的 SHA1 值 */
   expectedSha1?: string;
+  /** 文件实际的 SHA1 值（仅 `checksum_mismatch` 时存在） */
   actualSha1?: string;
 }
 
+/** 版本文件目录覆盖选项 */
 export interface VersionDirectoryOptions {
+  /**
+   * 自定义版本文件目录（`version.json` 和客户端 jar 所在目录）。
+   * 默认为 `<baseDirectory>/versions/<versionId>/`。
+   */
   versionDirectory?: string;
 }
 
+/** 加载器版本文件目录覆盖选项 */
 export interface LoaderVersionDirectoryOptions extends VersionDirectoryOptions {
+  /**
+   * 自定义加载器版本文件目录（Fabric/Quilt/Forge 版本 JSON 所在目录）。
+   * 默认与 `versionDirectory` 相同。
+   */
   loaderVersionDirectory?: string;
 }
 
+/** 资源目录覆盖选项 */
 export interface AssetDirectoryOptions {
+  /**
+   * 自定义资源根目录（`indexes/` 和 `objects/` 的父目录）。
+   * 默认为 `<baseDirectory>/assets/`。
+   */
   assetsDirectory?: string;
 }
 
+/** 库目录覆盖选项 */
 export interface LibraryDirectoryOptions {
+  /**
+   * 自定义库文件根目录。
+   * 默认为 `<baseDirectory>/libraries/`。
+   */
   librariesDirectory?: string;
 }
 
+/** 合并所有安装目录覆盖选项 */
 export interface InstallDirectoryOptions extends VersionDirectoryOptions, AssetDirectoryOptions, LibraryDirectoryOptions {}
 
+/** `prepareVersion` 方法的选项 */
 export interface PrepareVersionOptions extends DownloadProcessOptions, InstallDirectoryOptions {
+  /**
+   * 是否在下载完成后对所有文件进行 SHA1 完整性校验。
+   * @default true
+   */
   validate?: boolean;
 }
 
+/** `downloadVersionMetadataById` 方法的选项 */
 export interface DownloadVersionMetadataOptions extends DownloadProcessOptions, VersionDirectoryOptions {}
 
 export type LoaderInstallType = "forge" | "fabric" | "quilt";
 
+/** `installLoader` 方法的选项 */
 export interface InstallLoaderOptions extends PrepareVersionOptions {
+  /** 要安装的加载器类型（`"fabric"` | `"quilt"` | `"forge"`） */
   loader: LoaderInstallType;
+  /** 目标 Minecraft 版本，如 `"1.20.1"` */
   minecraftVersion: string;
+  /** 游戏安装根目录 */
   baseDirectory: string;
+  /**
+   * 加载器版本号。
+   * 未设置时自动查询并使用最新稳定版。
+   */
   loaderVersion?: string;
+  /**
+   * Java 可执行文件路径（仅 Forge 安装时需要）。
+   * 未设置时从 PATH 自动查找。
+   */
   javaPath?: string;
+  /**
+   * 加载器版本文件目录（Fabric/Quilt/Forge 版本 JSON 所在目录）。
+   * 默认与 `versionDirectory` 相同。
+   */
   loaderVersionDirectory?: string;
 }
 
+/** `prepareVersion` 和 `installLoader` 的返回值，包含已安装版本的所有路径 */
 export interface PreparedVersion {
+  /** 完整的版本元数据（原版与加载器合并后的结果） */
   metadata: VersionMetadata;
+  /** 版本文件目录的绝对路径（含 `version.json`） */
   versionDirectory: string;
+  /** 资源根目录的绝对路径 */
   assetsDirectory: string;
+  /** 库文件根目录的绝对路径 */
   librariesDirectory: string;
+  /** 客户端 jar 的绝对路径 */
   clientJarPath: string;
 }
 
@@ -101,6 +169,11 @@ type VersionMetadataInput = Partial<VersionMetadata> & Pick<VersionMetadata, "id
 
 const DEFAULT_VERSION_MANIFEST_URL = API_ENDPOINTS[API_SOURCE.MOJANG].versionManifest;
 
+/**
+ * 游戏安装器，负责版本文件、资源、库文件和加载器的下载与完整性校验。
+ *
+ * 通常通过 `CraftSDK.installer` 访问，也可以独立实例化用于更细粒度的控制。
+ */
 export class Installer {
   private apiSource: ApiSource;
   private timeoutMs: number;
@@ -138,6 +211,10 @@ export class Installer {
     return API_ENDPOINTS[this.apiSource].forgeMavenBase;
   }
 
+  /**
+   * 根据加载器类型安装对应的 mod 框架（Fabric / Quilt / Forge）。
+   * 会先通过 `prepareVersion` 安装原版，再叠加加载器层。
+   */
   async installLoader(options: InstallLoaderOptions): Promise<PreparedVersion> {
     if (options.loader === "fabric") {
       return this.installFabricLoader(options);
@@ -150,6 +227,10 @@ export class Installer {
     return this.installForgeLoader(options);
   }
 
+  /**
+   * 下载 Minecraft 版本清单（`version_manifest_v2.json`）并返回解析结果。
+   * @param targetDirectory 清单文件的保存目录
+   */
   async downloadMinecraftVersionManifest(
     targetDirectory: string,
     options?: DownloadProcessOptions
@@ -160,6 +241,11 @@ export class Installer {
     return readJson<VersionManifest>(manifestPath);
   }
 
+  /**
+   * 下载指定 URL 的版本元数据 JSON，保存到 `targetDirectory/version.json`。
+   * @param url 版本元数据的下载 URL（从版本清单中获取）
+   * @param targetDirectory 保存目录
+   */
   async downloadVersionMetadata(
     url: string,
     targetDirectory: string,
@@ -171,6 +257,11 @@ export class Installer {
     return readJson<VersionMetadata>(targetPath);
   }
 
+  /**
+   * 根据版本 ID 从清单中查找并下载版本元数据。
+   * @param versionId Minecraft 版本号，如 `"1.20.1"`
+   * @param baseDirectory 游戏根目录，清单文件和版本目录均在此创建
+   */
   async downloadVersionMetadataById(
     versionId: string,
     baseDirectory: string,
@@ -185,6 +276,12 @@ export class Installer {
     return this.downloadVersionMetadata(this.resolveUrl(versionEntry.url), versionDir, options);
   }
 
+  /**
+   * 下载客户端 jar 文件，已存在且 SHA1 匹配时跳过下载。
+   * @param metadata 版本元数据，用于确定 jar 文件的 URL 和期望校验值
+   * @param versionDirectory jar 文件的保存目录
+   * @returns jar 文件的绝对路径
+   */
   async downloadClientJar(
     metadata: VersionMetadata,
     versionDirectory: string,
@@ -209,6 +306,11 @@ export class Installer {
     return jarPath;
   }
 
+  /**
+   * 校验单个文件是否存在且 SHA1 匹配。
+   * @param filePath 文件绝对路径
+   * @param expectedSha1 期望的 SHA1 值，不提供时仅检查文件是否存在
+   */
   async validateFile(filePath: string, expectedSha1?: string): Promise<FileValidationResult> {
     if (!pathExists(filePath)) {
       const result: FileValidationResult = { filePath, valid: false, reason: "missing" };
@@ -234,6 +336,10 @@ export class Installer {
     return { filePath, valid: true, expectedSha1, actualSha1 };
   }
 
+  /**
+   * 校验一个版本的所有文件（客户端 jar、库文件、资源索引和资源对象）。
+   * 任何文件缺失或 SHA1 不匹配时抛出错误。
+   */
   async validateVersionFiles(
     metadata: VersionMetadata,
     baseDirectory: string,
@@ -255,6 +361,10 @@ export class Installer {
     await this.validateAssets(metadata, baseDirectory, options);
   }
 
+  /**
+   * 下载资源索引文件（`assets/indexes/<assetIndex>.json`），已存在且校验通过时跳过。
+   * @returns 资源索引文件的绝对路径
+   */
   async downloadAssetIndex(
     metadata: VersionMetadata,
     baseDirectory: string,
@@ -273,6 +383,11 @@ export class Installer {
     return indexPath;
   }
 
+  /**
+   * 下载资源文件（`assets/objects/` 下的所有哈希文件），最多 16 个并发。
+   * 已存在且校验通过的文件跳过下载。
+   * @returns 所有已下载资源文件的绝对路径列表
+   */
   async downloadAssets(
     metadata: VersionMetadata,
     baseDirectory: string,
@@ -288,6 +403,10 @@ export class Installer {
     });
   }
 
+  /**
+   * 校验所有资源文件的完整性（索引文件 + 每个资源对象的 SHA1）。
+   * 任何文件缺失或 SHA1 不匹配时抛出错误。
+   */
   async validateAssets(
     metadata: VersionMetadata,
     baseDirectory: string,
@@ -303,6 +422,10 @@ export class Installer {
     }
   }
 
+  /**
+   * 下载版本所需的所有库文件（`.jar`），已存在且校验通过的跳过下载。
+   * @returns 所有已安装库文件的绝对路径列表
+   */
   async downloadLibraries(
     metadata: VersionMetadata,
     baseDirectory: string,
@@ -639,6 +762,14 @@ export class Installer {
     return targetPath;
   }
 
+  /**
+   * 完整安装一个原版 Minecraft 版本：下载元数据、客户端 jar、库文件、资源，可选校验。
+   * 这是安装原版时的核心方法，`installLoader` 内部也会先调用它。
+   *
+   * @param versionId Minecraft 版本号，如 `"1.20.1"`
+   * @param baseDirectory 游戏根目录
+   * @returns 包含所有已解析路径的 `PreparedVersion`
+   */
   async prepareVersion(versionId: string, baseDirectory: string, options?: PrepareVersionOptions): Promise<PreparedVersion> {
     const metadata = await this.downloadVersionMetadataById(versionId, baseDirectory, options);
     const versionDirectory = this.getVersionDirectory(baseDirectory, versionId, options);
@@ -653,6 +784,12 @@ export class Installer {
     return { metadata, versionDirectory, assetsDirectory, librariesDirectory, clientJarPath };
   }
 
+  /**
+   * 下载并安装模组 jar 文件到 mods 目录。
+   * 目标文件已存在时直接跳过（不重新下载）。
+   *
+   * @returns 所有已安装模组文件的绝对路径列表
+   */
   async installMods(options: InstallOptions): Promise<string[]> {
     const installed: string[] = [];
 
