@@ -10,7 +10,7 @@ A Node.js SDK for Minecraft launcher workflows with class-based architecture sup
 - Platform-aware Java executable detection
 - Game launch argument assembly and process spawning via `GameLauncher`
 - Multi-source API support: Mojang official API or BMCLAPI mirror
-- **One-step game launch workflow** via `sdk.playGame()`
+- Separated install and launch workflow via `sdk.installGame()` and `sdk.launchGame()`
 
 ## Installation
 
@@ -20,23 +20,23 @@ yarn install
 
 ## Quick Start
 
-### One-step game launch (recommended)
+### Install, then launch
 
 ```ts
 import { CraftSDK } from "./src/index.js";
 
 const sdk = new CraftSDK({ apiSource: "bmclapi" });
 
-// Launch game with one method call
-const exitCode = await sdk.playGame({
+const installed = await sdk.installGame({
   version: "1.20.1",
   gameDirectory: ".minecraft",
-  accessToken: "your-access-token",
-  clientToken: "your-client-token",
-  profileId: "your-profile-id",
-  profileName: "YourPlayerName",
-  memory: { min: "512M", max: "2G" },
-  jvmArgs: ["-XX:+UseG1GC"],
+  runtimeDirectory: ".minecraft-isolated/runtime",
+  loader: "fabric",
+  assetsDirectory: ".minecraft-isolated/assets",
+  librariesDirectory: ".minecraft-isolated/libraries",
+  versionDirectory: ".minecraft-isolated/versions/1.20.1",
+  loaderVersionDirectory: ".minecraft-isolated/versions/fabric-1.20.1",
+  modsDirectory: ".minecraft-isolated/mods",
   mods: [
     {
       id: "fabric-api",
@@ -46,6 +46,22 @@ const exitCode = await sdk.playGame({
       sourceUrl: "https://example.com/fabric-api.jar",
     },
   ],
+});
+
+const exitCode = await sdk.launchGame({
+  metadata: installed.metadata,
+  gameDirectory: installed.gameDirectory,
+  assetsDirectory: installed.assetsDirectory,
+  librariesDirectory: installed.librariesDirectory,
+  versionDirectory: installed.versionDirectory,
+  clientJarPath: installed.clientJarPath,
+  loader: installed.loader,
+  accessToken: "your-access-token",
+  clientToken: "your-client-token",
+  profileId: "your-profile-id",
+  profileName: "YourPlayerName",
+  memory: { min: "512M", max: "2G" },
+  jvmArgs: ["-XX:+UseG1GC"],
 });
 
 console.log(`Game exited with code: ${exitCode}`);
@@ -95,13 +111,23 @@ const session = await sdk.auth.loginWithMicrosoftDeviceCode();
 console.log(session.selectedProfile?.name);
 ```
 
-`loginWithMicrosoftDeviceCode()` automatically exchanges the Microsoft token through Xbox Live, XSTS, and Minecraft Services, then saves a launcher-ready session. `playGame()` can use the same `microsoftAuth` options when no saved session exists:
+`loginWithMicrosoftDeviceCode()` automatically exchanges the Microsoft token through Xbox Live, XSTS, and Minecraft Services, then saves a launcher-ready session. `launchGame()` can use the same `microsoftAuth` options when no saved session exists:
 
 ```ts
-await sdk.playGame({
+const installed = await sdk.installGame({
   version: "1.20.1",
   gameDirectory: ".minecraft",
   loader: "fabric",
+});
+
+await sdk.launchGame({
+  metadata: installed.metadata,
+  gameDirectory: installed.gameDirectory,
+  assetsDirectory: installed.assetsDirectory,
+  librariesDirectory: installed.librariesDirectory,
+  versionDirectory: installed.versionDirectory,
+  clientJarPath: installed.clientJarPath,
+  loader: installed.loader,
 });
 ```
 
@@ -135,16 +161,48 @@ interface CraftSdkOptions {
 }
 ```
 
-### PlayGameOptions (for `sdk.playGame()`)
+### InstallGameOptions
 
 ```ts
-interface PlayGameOptions {
+interface InstallGameOptions {
   version: string;                    // e.g., "1.20.1"
-  gameDirectory: string;              // Game installation path
+  gameDirectory: string;              // Install base path
+  runtimeDirectory?: string;          // Runtime instance path for saves/config/resourcepacks
   loader?: "vanilla" | "forge" | "fabric" | "quilt";  // Default: "vanilla"
+  loaderVersion?: string;
   versionDirectory?: string;          // Custom vanilla/base version directory
   loaderVersionDirectory?: string;    // Custom loader profile directory
-  accessToken?: string;               // Auth token (or use saved session)
+  assetsDirectory?: string;           // Custom assets directory
+  librariesDirectory?: string;        // Custom libraries directory
+  modsDirectory?: string;             // Custom mods directory
+  validate?: boolean;
+  process?: DownloadProcessCallback;
+  mods?: Array<{
+    id: string;
+    name: string;
+    version: string;
+    sourceUrl: string;
+    fileName?: string;
+    loader?: string;
+  }>;
+}
+```
+
+### LaunchGameOptions
+
+`launchGame()` does not install or download files. Provide the directories from `installGame()` or your own isolated layout.
+
+```ts
+interface LaunchGameOptions {
+  metadata: VersionMetadata;
+  gameDirectory: string;              // Runtime instance path for saves/config/resourcepacks
+  assetsDirectory: string;
+  librariesDirectory: string;
+  versionDirectory: string;
+  clientJarPath?: string;
+  nativesDirectory?: string;
+  loader?: "vanilla" | "forge" | "fabric" | "quilt";
+  accessToken?: string;
   clientToken?: string;
   profileId?: string;
   profileName?: string;
@@ -153,17 +211,11 @@ interface PlayGameOptions {
   gameArgs?: string[];                // Additional game arguments
   javaPath?: string;                  // Custom Java executable path
   microsoftAuth?: MicrosoftDeviceCodeLoginOptions;
-  process?: DownloadProcessCallback;  // Per-launch download progress callback
-  mods?: Array<{
-    id: string;
-    name: string;
-    version: string;
-    sourceUrl: string;
-    fileName?: string;
-    loader?: string;                  // Defaults to PlayGameOptions.loader
-  }>;
+  extraEnvironment?: Record<string, string>;
 }
 ```
+
+`playGame()` remains as a compatibility wrapper around `installGame()` and `launchGame()`. New code should prefer the separated methods when version isolation matters.
 
 ### Custom version storage
 
@@ -175,15 +227,20 @@ await sdk.installer.prepareVersion("1.20.1", ".minecraft", {
 });
 ```
 
-For loader installs, `versionDirectory` is used for the base Minecraft version and `loaderVersionDirectory` is used for the generated Fabric/Quilt/Forge profile.
+For full version isolation, pass every directory explicitly: `runtimeDirectory`, `versionDirectory`, `loaderVersionDirectory`, `assetsDirectory`, `librariesDirectory`, `modsDirectory`, and optionally `nativesDirectory` at launch.
+
+Minecraft does not have a separate launch argument for `saves`. Saves, config, resource packs, screenshots, logs, and `options.txt` are isolated by the runtime `gameDirectory`, which maps to Minecraft's `--gameDir`.
 
 ```ts
-await sdk.playGame({
+const installed = await sdk.installGame({
   version: "1.20.1",
   gameDirectory: ".minecraft",
+  runtimeDirectory: "D:/minecraft-instances/fabric-1.20.1",
   loader: "fabric",
   versionDirectory: "D:/minecraft-versions/base-1.20.1",
   loaderVersionDirectory: "D:/minecraft-versions/fabric-profile",
+  assetsDirectory: "D:/minecraft-versions/assets",
+  librariesDirectory: "D:/minecraft-versions/libraries",
 });
 ```
 
@@ -200,7 +257,7 @@ type DownloadProcessCallback = (progress: {
   progress?: number;
 }) => void;
 
-await sdk.playGame({
+await sdk.installGame({
   version: "1.20.1",
   gameDirectory: ".minecraft",
   process: ({ filePath, progress }) => {
@@ -235,6 +292,7 @@ MC_VERSION=1.20.1 yarn test fabric
 FABRIC_LOADER_VERSION=0.16.14 yarn test fabric
 FORGE_LOADER_VERSION=47.4.0 yarn test forge
 MC_GAME_DIR=.minecraft yarn test vanilla
+MC_RUNTIME_DIR=.minecraft-instances/test yarn test vanilla
 ```
 
 ## Building
@@ -249,4 +307,4 @@ yarn build
 - `Downloader`: Version manifest and metadata fetching
 - `Installer`: Library and mod installation with checksums
 - `GameLauncher`: Argument assembly and process spawning
-- `CraftSDK`: High-level orchestration with `playGame()` convenience method
+- `CraftSDK`: High-level install and launch orchestration

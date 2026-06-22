@@ -16,6 +16,7 @@ export interface LaunchOptions {
   modInstallTarget?: ModInstallTarget;
   authSession?: AuthSession;
   librariesDirectory?: string;
+  nativesDirectory?: string;
   clientJarPath?: string;
   gameDirectory: string;
   assetsDirectory: string;

@@ -3,6 +3,7 @@ import { runJavaProcess } from "./platform/process.js";
 import { findJavaExecutable } from "./platform/java.js";
 import { getLibrariesDir } from "./platform/paths.js";
 import { getMavenArtifactPath } from "./utils/maven.js";
+import { ensureDir } from "./utils/fs.js";
 import type { LaunchOptions } from "./models/options.js";
 import type { VersionMetadata } from "./models/version.js";
 
@@ -55,7 +56,7 @@ function resolveArgumentEntry(value: string | string[]): string[] {
 function buildArgumentVariables(options: LaunchOptions, metadata: VersionMetadata, classpath: string[], versionName = metadata.id): Record<string, string> {
   const classpathSeparator = process.platform === "win32" ? ";" : ":";
   const librariesDir = options.librariesDirectory ?? getLibrariesDir(options.gameDirectory);
-  const nativesDirectory = join(options.gameDirectory, "natives", metadata.id);
+  const nativesDirectory = options.nativesDirectory ?? join(options.gameDirectory, "natives", metadata.id);
 
   return {
     auth_access_token: options.authSession?.accessToken ?? "0",
@@ -194,6 +195,7 @@ export class GameLauncher {
       throw new Error("Java executable not found on the system.");
     }
 
+    ensureDir(options.gameDirectory);
     const args = buildArguments(options, metadata);
     const runOptions: { javaExecutable: string; args: string[]; cwd?: string; env?: Record<string, string> } = {
       javaExecutable,

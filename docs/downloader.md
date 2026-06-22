@@ -1,6 +1,6 @@
 # Downloader
 
-`Downloader` 是低层下载封装，适合需要直接下载清单或指定 URL 时使用。大多数启动流程应优先使用 `Installer` 或 `CraftSDK.playGame()`。
+`Downloader` 是低层下载封装，适合需要直接下载清单或指定 URL 时使用。大多数启动流程应优先使用 `Installer` 或 `CraftSDK.installGame()`。
 
 ## 构造函数
 

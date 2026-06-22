@@ -49,12 +49,15 @@ interface PrepareVersionOptions {
   validate?: boolean;
   process?: DownloadProcessCallback;
   versionDirectory?: string;
+  assetsDirectory?: string;
+  librariesDirectory?: string;
 }
 ```
 
 `validate` 默认是 `true`。设置为 `false` 可以跳过最终全量校验，但下载后的单文件校验仍会在部分流程中执行。
 
 `versionDirectory` 可指定版本 metadata 和 client jar 的实际存储目录。未传时默认使用 `${baseDirectory}/versions/<versionId>`。
+`assetsDirectory` 和 `librariesDirectory` 可分别指定 assets 与 libraries 的实际存储目录，用于版本隔离。
 
 ### PreparedVersion
 
@@ -62,12 +65,16 @@ interface PrepareVersionOptions {
 interface PreparedVersion {
   metadata: VersionMetadata;
   versionDirectory: string;
+  assetsDirectory: string;
+  librariesDirectory: string;
   clientJarPath: string;
 }
 ```
 
 - `metadata`: 可传给 `GameLauncher.launch()` 的版本元数据。
 - `versionDirectory`: 当前版本目录。
+- `assetsDirectory`: 实际 assets 目录。
+- `librariesDirectory`: 实际 libraries 目录。
 - `clientJarPath`: 实际 client jar 路径。loader 版本通常复用原版 jar。
 
 ## installLoader()
@@ -133,11 +140,11 @@ downloadClientJar(
 downloadLibraries(
   metadata: VersionMetadata,
   baseDirectory: string,
-  options?: DownloadProcessOptions
+  options?: DownloadProcessOptions & LibraryDirectoryOptions
 ): Promise<string[]>
 ```
 
-下载版本 libraries 到 `${baseDirectory}/libraries`。
+下载版本 libraries。未传 `options.librariesDirectory` 时使用 `${baseDirectory}/libraries`。
 
 支持两种 library 元数据：
 
@@ -152,11 +159,11 @@ downloadLibraries(
 downloadAssetIndex(
   metadata: VersionMetadata,
   baseDirectory: string,
-  options?: DownloadProcessOptions
+  options?: DownloadProcessOptions & AssetDirectoryOptions
 ): Promise<string>
 ```
 
-下载 assets index 到 `${baseDirectory}/assets/indexes/<id>.json`。
+下载 assets index。未传 `options.assetsDirectory` 时使用 `${baseDirectory}/assets/indexes/<id>.json`。
 
 ## downloadAssets()
 
@@ -164,7 +171,7 @@ downloadAssetIndex(
 downloadAssets(
   metadata: VersionMetadata,
   baseDirectory: string,
-  options?: DownloadProcessOptions
+  options?: DownloadProcessOptions & AssetDirectoryOptions
 ): Promise<string[]>
 ```
 

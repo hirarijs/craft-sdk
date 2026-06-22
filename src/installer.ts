@@ -39,7 +39,17 @@ export interface LoaderVersionDirectoryOptions extends VersionDirectoryOptions {
   loaderVersionDirectory?: string;
 }
 
-export interface PrepareVersionOptions extends DownloadProcessOptions, VersionDirectoryOptions {
+export interface AssetDirectoryOptions {
+  assetsDirectory?: string;
+}
+
+export interface LibraryDirectoryOptions {
+  librariesDirectory?: string;
+}
+
+export interface InstallDirectoryOptions extends VersionDirectoryOptions, AssetDirectoryOptions, LibraryDirectoryOptions {}
+
+export interface PrepareVersionOptions extends DownloadProcessOptions, InstallDirectoryOptions {
   validate?: boolean;
 }
 
@@ -59,6 +69,8 @@ export interface InstallLoaderOptions extends PrepareVersionOptions {
 export interface PreparedVersion {
   metadata: VersionMetadata;
   versionDirectory: string;
+  assetsDirectory: string;
+  librariesDirectory: string;
   clientJarPath: string;
 }
 
@@ -222,11 +234,17 @@ export class Installer {
     return { filePath, valid: true, expectedSha1, actualSha1 };
   }
 
-  async validateVersionFiles(metadata: VersionMetadata, baseDirectory: string, versionDirectory: string, clientJarPath?: string): Promise<void> {
+  async validateVersionFiles(
+    metadata: VersionMetadata,
+    baseDirectory: string,
+    versionDirectory: string,
+    clientJarPath?: string,
+    options?: AssetDirectoryOptions & LibraryDirectoryOptions
+  ): Promise<void> {
     const clientJar = clientJarPath ?? join(versionDirectory, `${metadata.jar ?? metadata.id}.jar`);
     await this.assertValidFile(clientJar, metadata.downloads.client.sha1, `client jar ${metadata.id}`);
 
-    const librariesDir = getLibrariesDir(baseDirectory);
+    const librariesDir = this.getLibrariesDirectory(baseDirectory, options);
     for (const library of metadata.libraries ?? []) {
       const artifact = library.downloads?.artifact;
       const artifactPath = artifact?.path ?? getMavenArtifactPath(library.name).path;
@@ -234,15 +252,15 @@ export class Installer {
       await this.assertValidFile(join(librariesDir, artifactPath), artifact?.sha1, `library ${library.name}`);
     }
 
-    await this.validateAssets(metadata, baseDirectory);
+    await this.validateAssets(metadata, baseDirectory, options);
   }
 
   async downloadAssetIndex(
     metadata: VersionMetadata,
     baseDirectory: string,
-    options?: DownloadProcessOptions
+    options?: DownloadProcessOptions & AssetDirectoryOptions
   ): Promise<string> {
-    const indexesDir = join(getAssetsDir(baseDirectory), "indexes");
+    const indexesDir = join(this.getAssetsDirectory(baseDirectory, options), "indexes");
     const indexPath = join(indexesDir, `${metadata.assetIndex.id}.json`);
     const validation = await this.validateFile(indexPath, metadata.assetIndex.sha1);
     if (validation.valid) {
@@ -258,11 +276,11 @@ export class Installer {
   async downloadAssets(
     metadata: VersionMetadata,
     baseDirectory: string,
-    options?: DownloadProcessOptions
+    options?: DownloadProcessOptions & AssetDirectoryOptions
   ): Promise<string[]> {
     const indexPath = await this.downloadAssetIndex(metadata, baseDirectory, options);
     const assetIndex = readJson<AssetIndexData>(indexPath);
-    const assetsDir = getAssetsDir(baseDirectory);
+    const assetsDir = this.getAssetsDirectory(baseDirectory, options);
     const assets = Object.entries(assetIndex.objects);
 
     return this.mapWithConcurrency(assets, 16, async ([assetName, asset]) => {
@@ -270,8 +288,12 @@ export class Installer {
     });
   }
 
-  async validateAssets(metadata: VersionMetadata, baseDirectory: string): Promise<void> {
-    const assetsDir = getAssetsDir(baseDirectory);
+  async validateAssets(
+    metadata: VersionMetadata,
+    baseDirectory: string,
+    options?: AssetDirectoryOptions
+  ): Promise<void> {
+    const assetsDir = this.getAssetsDirectory(baseDirectory, options);
     const indexPath = join(assetsDir, "indexes", `${metadata.assetIndex.id}.json`);
     await this.assertValidFile(indexPath, metadata.assetIndex.sha1, `asset index ${metadata.assetIndex.id}`);
 
@@ -284,9 +306,9 @@ export class Installer {
   async downloadLibraries(
     metadata: VersionMetadata,
     baseDirectory: string,
-    options?: DownloadProcessOptions
+    options?: DownloadProcessOptions & LibraryDirectoryOptions
   ): Promise<string[]> {
-    const librariesDir = getLibrariesDir(baseDirectory);
+    const librariesDir = this.getLibrariesDirectory(baseDirectory, options);
     const installed: string[] = [];
 
     for (const library of metadata.libraries ?? []) {
@@ -388,10 +410,16 @@ export class Installer {
     const metadata = this.mergeVersionMetadata(baseVersion.metadata, forgeMetadata);
     await this.downloadLibraries(metadata, options.baseDirectory, options);
     if (options.validate ?? true) {
-      await this.validateVersionFiles(metadata, options.baseDirectory, baseVersion.versionDirectory, baseVersion.clientJarPath);
+      await this.validateVersionFiles(metadata, options.baseDirectory, baseVersion.versionDirectory, baseVersion.clientJarPath, options);
     }
 
-    return { metadata, versionDirectory, clientJarPath: baseVersion.clientJarPath };
+    return {
+      metadata,
+      versionDirectory,
+      assetsDirectory: baseVersion.assetsDirectory,
+      librariesDirectory: baseVersion.librariesDirectory,
+      clientJarPath: baseVersion.clientJarPath,
+    };
   }
 
   private async installProfileLoaderVersion(
@@ -406,10 +434,16 @@ export class Installer {
 
     await this.downloadLibraries(metadata, baseDirectory, options);
     if (options.validate ?? true) {
-      await this.validateVersionFiles(metadata, baseDirectory, baseVersion.versionDirectory, baseVersion.clientJarPath);
+      await this.validateVersionFiles(metadata, baseDirectory, baseVersion.versionDirectory, baseVersion.clientJarPath, options);
     }
 
-    return { metadata, versionDirectory, clientJarPath: baseVersion.clientJarPath };
+    return {
+      metadata,
+      versionDirectory,
+      assetsDirectory: baseVersion.assetsDirectory,
+      librariesDirectory: baseVersion.librariesDirectory,
+      clientJarPath: baseVersion.clientJarPath,
+    };
   }
 
   private mergeVersionMetadata(parent: VersionMetadata, child: VersionMetadataInput): VersionMetadata {
@@ -541,6 +575,18 @@ export class Installer {
     return versionDirectory;
   }
 
+  private getAssetsDirectory(baseDirectory: string, options?: AssetDirectoryOptions): string {
+    const assetsDirectory = options?.assetsDirectory ?? getAssetsDir(baseDirectory);
+    ensureDir(assetsDirectory);
+    return assetsDirectory;
+  }
+
+  private getLibrariesDirectory(baseDirectory: string, options?: LibraryDirectoryOptions): string {
+    const librariesDirectory = options?.librariesDirectory ?? getLibrariesDir(baseDirectory);
+    ensureDir(librariesDirectory);
+    return librariesDirectory;
+  }
+
   private findInstalledForgeVersionDirectory(minecraftVersion: string, baseDirectory: string): string {
     const versionsDir = getVersionDir(baseDirectory);
     const forgePrefix = `${minecraftVersion}-forge-`;
@@ -596,13 +642,15 @@ export class Installer {
   async prepareVersion(versionId: string, baseDirectory: string, options?: PrepareVersionOptions): Promise<PreparedVersion> {
     const metadata = await this.downloadVersionMetadataById(versionId, baseDirectory, options);
     const versionDirectory = this.getVersionDirectory(baseDirectory, versionId, options);
+    const assetsDirectory = this.getAssetsDirectory(baseDirectory, options);
+    const librariesDirectory = this.getLibrariesDirectory(baseDirectory, options);
     const clientJarPath = await this.downloadClientJar(metadata, versionDirectory, options);
     await this.downloadLibraries(metadata, baseDirectory, options);
     await this.downloadAssets(metadata, baseDirectory, options);
     if (options?.validate ?? true) {
-      await this.validateVersionFiles(metadata, baseDirectory, versionDirectory);
+      await this.validateVersionFiles(metadata, baseDirectory, versionDirectory, undefined, options);
     }
-    return { metadata, versionDirectory, clientJarPath };
+    return { metadata, versionDirectory, assetsDirectory, librariesDirectory, clientJarPath };
   }
 
   async installMods(options: InstallOptions): Promise<string[]> {

@@ -1,12 +1,12 @@
 import { CraftSDK, API_SOURCE } from "../index.js";
 import { findJavaExecutable } from "../platform/java.js";
-import type { PlayGameOptions } from "../sdk.js";
+import type { GameLoaderType, InstallGameOptions, LaunchGameOptions } from "../sdk.js";
 
 export type TestName = "vanilla" | "fabric" | "forge";
 
 export interface LaunchTestConfig {
   name: TestName;
-  loader: NonNullable<PlayGameOptions["loader"]>;
+  loader: GameLoaderType;
   loaderVersion?: string;
 }
 
@@ -19,6 +19,10 @@ function getVersion(): string {
 
 function getGameDirectory(): string {
   return process.env.MC_GAME_DIR ?? DEFAULT_GAME_DIRECTORY;
+}
+
+function getRuntimeDirectory(): string | undefined {
+  return process.env.MC_RUNTIME_DIR;
 }
 
 function getPlayerName(): string {
@@ -38,6 +42,10 @@ export async function runLaunchTest(config: LaunchTestConfig): Promise<number> {
   console.log(`Craft SDK test: ${config.name}`);
   console.log(`Minecraft version: ${getVersion()}`);
   console.log(`Game directory: ${getGameDirectory()}`);
+  const runtimeDirectory = getRuntimeDirectory();
+  if (runtimeDirectory) {
+    console.log(`Runtime directory: ${runtimeDirectory}`);
+  }
 
   const javaPath = findJavaExecutable();
   if (!javaPath) {
@@ -54,20 +62,36 @@ export async function runLaunchTest(config: LaunchTestConfig): Promise<number> {
   const auth = buildAuthOptions();
   await sdk.auth.loginWithToken(auth.accessToken, auth.clientToken, auth.profileId, auth.profileName);
 
-  const options: PlayGameOptions = {
+  const installOptions: InstallGameOptions = {
     version: getVersion(),
     gameDirectory: getGameDirectory(),
+    loader: config.loader,
+    javaPath,
+  };
+  if (runtimeDirectory) {
+    installOptions.runtimeDirectory = runtimeDirectory;
+  }
+  if (config.loaderVersion) {
+    installOptions.loaderVersion = config.loaderVersion;
+  }
+
+  const installed = await sdk.installGame(installOptions);
+
+  const launchOptions: LaunchGameOptions = {
+    metadata: installed.metadata,
+    gameDirectory: installed.gameDirectory,
+    assetsDirectory: installed.assetsDirectory,
+    librariesDirectory: installed.librariesDirectory,
+    versionDirectory: installed.versionDirectory,
+    clientJarPath: installed.clientJarPath,
     javaPath,
     loader: config.loader,
     memory: { min: "512M", max: "2G" },
     jvmArgs: ["-XX:+UseG1GC", "-XX:+UnlockExperimentalVMOptions"],
     ...auth,
   };
-  if (config.loaderVersion) {
-    options.loaderVersion = config.loaderVersion;
-  }
 
-  const exitCode = await sdk.playGame(options);
+  const exitCode = await sdk.launchGame(launchOptions);
   console.log(`Game exited with code: ${exitCode}`);
   return exitCode;
 }

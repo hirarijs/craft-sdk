@@ -1,4 +1,15 @@
-export { CraftSDK, type CraftSdkOptions, type PlayGameOptions } from "./sdk.js";
+export {
+  CraftSDK,
+  type CraftSdkOptions,
+  type GameAuthOptions,
+  type GameDirectoryOptions,
+  type GameLoaderType,
+  type GameRuntimeOptions,
+  type InstalledGame,
+  type InstallGameOptions,
+  type LaunchGameOptions,
+  type PlayGameOptions,
+} from "./sdk.js";
 export {
   AuthManager,
   type AuthOptions,
@@ -13,6 +24,9 @@ export {
   type FileValidationResult,
   type InstallLoaderOptions,
   type InstallerOptions,
+  type AssetDirectoryOptions,
+  type InstallDirectoryOptions,
+  type LibraryDirectoryOptions,
   type LoaderVersionDirectoryOptions,
   type LoaderInstallType,
   type PreparedVersion,
