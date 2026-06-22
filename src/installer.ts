@@ -31,9 +31,19 @@ export interface FileValidationResult {
   actualSha1?: string;
 }
 
-export interface PrepareVersionOptions extends DownloadProcessOptions {
+export interface VersionDirectoryOptions {
+  versionDirectory?: string;
+}
+
+export interface LoaderVersionDirectoryOptions extends VersionDirectoryOptions {
+  loaderVersionDirectory?: string;
+}
+
+export interface PrepareVersionOptions extends DownloadProcessOptions, VersionDirectoryOptions {
   validate?: boolean;
 }
+
+export interface DownloadVersionMetadataOptions extends DownloadProcessOptions, VersionDirectoryOptions {}
 
 export type LoaderInstallType = "forge" | "fabric" | "quilt";
 
@@ -43,6 +53,7 @@ export interface InstallLoaderOptions extends PrepareVersionOptions {
   baseDirectory: string;
   loaderVersion?: string;
   javaPath?: string;
+  loaderVersionDirectory?: string;
 }
 
 export interface PreparedVersion {
@@ -151,14 +162,14 @@ export class Installer {
   async downloadVersionMetadataById(
     versionId: string,
     baseDirectory: string,
-    options?: DownloadProcessOptions
+    options?: DownloadVersionMetadataOptions
   ): Promise<VersionMetadata> {
     const manifest = await this.downloadMinecraftVersionManifest(baseDirectory, options);
     const versionEntry = manifest.versions.find((entry) => entry.id === versionId);
     if (!versionEntry) {
       throw new Error(`Version ${versionId} not found in manifest.`);
     }
-    const versionDir = join(getVersionDir(baseDirectory), versionId);
+    const versionDir = this.getVersionDirectory(baseDirectory, versionId, options);
     return this.downloadVersionMetadata(this.resolveUrl(versionEntry.url), versionDir, options);
   }
 
@@ -339,9 +350,10 @@ export class Installer {
     const baseVersion = await this.prepareVersion(options.minecraftVersion, options.baseDirectory, options);
     const forgeVersion = await this.resolveForgeVersion(options.minecraftVersion, options.loaderVersion);
     const forgeId = `${options.minecraftVersion}-forge-${forgeVersion.replace(`${options.minecraftVersion}-`, "")}`;
-    let versionDirectory = join(getVersionDir(options.baseDirectory), forgeId);
+    const defaultVersionDirectory = this.getDefaultVersionDirectory(options.baseDirectory, forgeId);
+    const versionDirectory = this.getLoaderVersionDirectory(options.baseDirectory, forgeId, options);
 
-    if (!this.hasVersionMetadata(versionDirectory, forgeId)) {
+    if (!this.hasVersionMetadata(versionDirectory, forgeId) && !this.hasVersionMetadata(defaultVersionDirectory, forgeId)) {
       const installerDir = join(options.baseDirectory, "installers");
       ensureDir(installerDir);
       const installerPath = join(installerDir, `forge-${forgeVersion}-installer.jar`);
@@ -365,7 +377,11 @@ export class Installer {
     }
 
     if (!this.hasVersionMetadata(versionDirectory, forgeId)) {
-      versionDirectory = this.findInstalledForgeVersionDirectory(options.minecraftVersion, options.baseDirectory);
+      const installedVersionDirectory = this.hasVersionMetadata(defaultVersionDirectory, forgeId)
+        ? defaultVersionDirectory
+        : this.findInstalledForgeVersionDirectory(options.minecraftVersion, options.baseDirectory);
+      const installedMetadata = this.readVersionMetadataFromDirectory(installedVersionDirectory, forgeId);
+      this.writeVersionMetadata(versionDirectory, forgeId, installedMetadata);
     }
 
     const forgeMetadata = this.readVersionMetadataFromDirectory(versionDirectory, forgeId);
@@ -382,16 +398,14 @@ export class Installer {
     loaderMetadata: VersionMetadataInput,
     baseVersion: PreparedVersion,
     baseDirectory: string,
-    options?: PrepareVersionOptions
+    options: InstallLoaderOptions
   ): Promise<PreparedVersion> {
     const metadata = this.mergeVersionMetadata(baseVersion.metadata, loaderMetadata);
-    const versionDirectory = join(getVersionDir(baseDirectory), loaderMetadata.id);
-    ensureDir(versionDirectory);
-    writeJson(join(versionDirectory, "version.json"), loaderMetadata);
-    writeJson(join(versionDirectory, `${loaderMetadata.id}.json`), loaderMetadata);
+    const versionDirectory = this.getLoaderVersionDirectory(baseDirectory, loaderMetadata.id, options);
+    this.writeVersionMetadata(versionDirectory, loaderMetadata.id, loaderMetadata);
 
     await this.downloadLibraries(metadata, baseDirectory, options);
-    if (options?.validate ?? true) {
+    if (options.validate ?? true) {
       await this.validateVersionFiles(metadata, baseDirectory, baseVersion.versionDirectory, baseVersion.clientJarPath);
     }
 
@@ -465,21 +479,66 @@ export class Installer {
   }
 
   private readVersionMetadataFromDirectory(versionDirectory: string, versionId: string): VersionMetadataInput {
-    const versionJson = join(versionDirectory, "version.json");
-    if (pathExists(versionJson)) {
-      return readJson<VersionMetadataInput>(versionJson);
+    for (const metadataPath of [join(versionDirectory, "version.json"), join(versionDirectory, `${versionId}.json`)]) {
+      if (!pathExists(metadataPath)) {
+        continue;
+      }
+
+      const metadata = readJson<VersionMetadataInput>(metadataPath);
+      if (metadata.id === versionId) {
+        return metadata;
+      }
     }
 
-    const standardJson = join(versionDirectory, `${versionId}.json`);
-    if (pathExists(standardJson)) {
-      return readJson<VersionMetadataInput>(standardJson);
-    }
+    throw new Error(`Version metadata for ${versionId} not found in ${versionDirectory}.`);
+  }
 
-    throw new Error(`Version metadata not found in ${versionDirectory}.`);
+  private writeVersionMetadata(versionDirectory: string, versionId: string, metadata: VersionMetadataInput): void {
+    ensureDir(versionDirectory);
+    writeJson(join(versionDirectory, "version.json"), metadata);
+    writeJson(join(versionDirectory, `${versionId}.json`), metadata);
   }
 
   private hasVersionMetadata(versionDirectory: string, versionId: string): boolean {
-    return pathExists(join(versionDirectory, "version.json")) || pathExists(join(versionDirectory, `${versionId}.json`));
+    return this.isVersionMetadataFile(join(versionDirectory, "version.json"), versionId) ||
+      this.isVersionMetadataFile(join(versionDirectory, `${versionId}.json`), versionId);
+  }
+
+  private isVersionMetadataFile(filePath: string, versionId: string): boolean {
+    if (!pathExists(filePath)) {
+      return false;
+    }
+
+    try {
+      return readJson<VersionMetadataInput>(filePath).id === versionId;
+    } catch {
+      return false;
+    }
+  }
+
+  private getVersionDirectory(
+    baseDirectory: string,
+    versionId: string,
+    options?: VersionDirectoryOptions
+  ): string {
+    return this.ensureVersionDirectory(options?.versionDirectory ?? this.getDefaultVersionDirectory(baseDirectory, versionId));
+  }
+
+  private getLoaderVersionDirectory(
+    baseDirectory: string,
+    versionId: string,
+    options?: LoaderVersionDirectoryOptions
+  ): string {
+    return this.ensureVersionDirectory(options?.loaderVersionDirectory ?? this.getDefaultVersionDirectory(baseDirectory, versionId));
+  }
+
+  private getDefaultVersionDirectory(baseDirectory: string, versionId: string): string {
+    return join(getVersionDir(baseDirectory), versionId);
+  }
+
+  private ensureVersionDirectory(versionDirectory: string): string {
+    ensureDir(versionDirectory);
+    return versionDirectory;
   }
 
   private findInstalledForgeVersionDirectory(minecraftVersion: string, baseDirectory: string): string {
@@ -536,7 +595,7 @@ export class Installer {
 
   async prepareVersion(versionId: string, baseDirectory: string, options?: PrepareVersionOptions): Promise<PreparedVersion> {
     const metadata = await this.downloadVersionMetadataById(versionId, baseDirectory, options);
-    const versionDirectory = join(getVersionDir(baseDirectory), versionId);
+    const versionDirectory = this.getVersionDirectory(baseDirectory, versionId, options);
     const clientJarPath = await this.downloadClientJar(metadata, versionDirectory, options);
     await this.downloadLibraries(metadata, baseDirectory, options);
     await this.downloadAssets(metadata, baseDirectory, options);

@@ -142,6 +142,8 @@ interface PlayGameOptions {
   version: string;                    // e.g., "1.20.1"
   gameDirectory: string;              // Game installation path
   loader?: "vanilla" | "forge" | "fabric" | "quilt";  // Default: "vanilla"
+  versionDirectory?: string;          // Custom vanilla/base version directory
+  loaderVersionDirectory?: string;    // Custom loader profile directory
   accessToken?: string;               // Auth token (or use saved session)
   clientToken?: string;
   profileId?: string;
@@ -161,6 +163,28 @@ interface PlayGameOptions {
     loader?: string;                  // Defaults to PlayGameOptions.loader
   }>;
 }
+```
+
+### Custom version storage
+
+By default, versions are stored under `<gameDirectory>/versions/<version-id>`. Pass `versionDirectory` to use an exact directory instead of deriving it from the version id.
+
+```ts
+await sdk.installer.prepareVersion("1.20.1", ".minecraft", {
+  versionDirectory: "D:/minecraft-versions/my-1.20.1",
+});
+```
+
+For loader installs, `versionDirectory` is used for the base Minecraft version and `loaderVersionDirectory` is used for the generated Fabric/Quilt/Forge profile.
+
+```ts
+await sdk.playGame({
+  version: "1.20.1",
+  gameDirectory: ".minecraft",
+  loader: "fabric",
+  versionDirectory: "D:/minecraft-versions/base-1.20.1",
+  loaderVersionDirectory: "D:/minecraft-versions/fabric-profile",
+});
 ```
 
 ### Download progress

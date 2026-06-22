@@ -20,6 +20,8 @@ export interface PlayGameOptions extends DownloadProcessOptions {
   gameDirectory: string;
   loader?: "vanilla" | "forge" | "fabric" | "quilt";
   loaderVersion?: string;
+  versionDirectory?: string;
+  loaderVersionDirectory?: string;
   accessToken?: string;
   clientToken?: string;
   profileId?: string;
@@ -93,6 +95,7 @@ export class CraftSDK {
     // 2. Download version metadata and install loader profile when needed
     const preparedVersion = loader === "vanilla"
       ? await this.installer.prepareVersion(options.version, gameDir, {
+          ...(options.versionDirectory ? { versionDirectory: options.versionDirectory } : {}),
           ...(processCallback ? { process: processCallback } : {}),
         })
       : await this.installer.installLoader({
@@ -100,6 +103,8 @@ export class CraftSDK {
           minecraftVersion: options.version,
           baseDirectory: gameDir,
           ...(options.loaderVersion ? { loaderVersion: options.loaderVersion } : {}),
+          ...(options.versionDirectory ? { versionDirectory: options.versionDirectory } : {}),
+          ...(options.loaderVersionDirectory ? { loaderVersionDirectory: options.loaderVersionDirectory } : {}),
           ...(options.javaPath ? { javaPath: options.javaPath } : {}),
           ...(processCallback ? { process: processCallback } : {}),
         });

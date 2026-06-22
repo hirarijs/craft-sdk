@@ -48,10 +48,13 @@ const prepared = await sdk.installer.prepareVersion("1.20.1", ".minecraft");
 interface PrepareVersionOptions {
   validate?: boolean;
   process?: DownloadProcessCallback;
+  versionDirectory?: string;
 }
 ```
 
 `validate` 默认是 `true`。设置为 `false` 可以跳过最终全量校验，但下载后的单文件校验仍会在部分流程中执行。
+
+`versionDirectory` 可指定版本 metadata 和 client jar 的实际存储目录。未传时默认使用 `${baseDirectory}/versions/<versionId>`。
 
 ### PreparedVersion
 
@@ -109,6 +112,8 @@ downloadVersionMetadataById(
 ```
 
 从 manifest 查找版本，再下载对应 metadata。
+
+`options.versionDirectory` 可覆盖 metadata 写入目录，避免按 `versionId` 拼接目录。
 
 ## downloadClientJar()
 

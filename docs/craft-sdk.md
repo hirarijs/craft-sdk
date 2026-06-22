@@ -55,6 +55,8 @@ interface PlayGameOptions {
   gameDirectory: string;
   loader?: "vanilla" | "forge" | "fabric" | "quilt";
   loaderVersion?: string;
+  versionDirectory?: string;
+  loaderVersionDirectory?: string;
   accessToken?: string;
   clientToken?: string;
   profileId?: string;
@@ -74,6 +76,9 @@ interface PlayGameOptions {
   }>;
 }
 ```
+
+- `versionDirectory`: 自定义原版/基础版本目录。未传时使用 `<gameDirectory>/versions/<version>`。
+- `loaderVersionDirectory`: 自定义 loader profile 目录。未传时使用 `<gameDirectory>/versions/<loader-version-id>`。
 
 `process` 可覆盖构造器中的默认下载进度回调。回调参数结构：
 

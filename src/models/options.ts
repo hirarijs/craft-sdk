@@ -26,6 +26,7 @@ export interface LaunchOptions {
 export interface DownloadOptions extends DownloadProcessOptions {
   version: string;
   targetDirectory: string;
+  versionDirectory?: string;
   timeoutMs?: number;
 }
 

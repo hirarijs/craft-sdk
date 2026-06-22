@@ -13,9 +13,12 @@ export {
   type FileValidationResult,
   type InstallLoaderOptions,
   type InstallerOptions,
+  type LoaderVersionDirectoryOptions,
   type LoaderInstallType,
   type PreparedVersion,
   type PrepareVersionOptions,
+  type VersionDirectoryOptions,
+  type DownloadVersionMetadataOptions,
 } from "./installer.js";
 export { GameLauncher } from "./launcher.js";
 export { API_SOURCE, API_ENDPOINTS, type ApiSource } from "./constant.js";
