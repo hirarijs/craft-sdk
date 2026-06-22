@@ -1,7 +1,12 @@
 import { join, dirname } from "node:path";
 import { readdirSync } from "node:fs";
 import { ensureDir, pathExists, readJson, writeJson } from "./utils/fs.js";
-import { downloadFile } from "./utils/downloader.js";
+import {
+  downloadFile,
+  type DownloadFileOptions,
+  type DownloadProcessCallback,
+  type DownloadProcessOptions,
+} from "./utils/downloader.js";
 import { sha1File } from "./utils/checksum.js";
 import { getMavenArtifactPath } from "./utils/maven.js";
 import { resolveApiUrl } from "./utils/api.js";
@@ -13,7 +18,7 @@ import { getVersionDir, getModsDir, getLibrariesDir, getAssetsDir } from "./plat
 import type { VersionManifest, VersionMetadata, LibraryEntry } from "./models/version.js";
 import { API_ENDPOINTS, API_SOURCE, type ApiSource } from "./constant.js";
 
-export interface InstallerOptions {
+export interface InstallerOptions extends DownloadProcessOptions {
   apiSource?: ApiSource;
   timeoutMs?: number;
 }
@@ -26,7 +31,7 @@ export interface FileValidationResult {
   actualSha1?: string;
 }
 
-export interface PrepareVersionOptions {
+export interface PrepareVersionOptions extends DownloadProcessOptions {
   validate?: boolean;
 }
 
@@ -76,10 +81,14 @@ const DEFAULT_VERSION_MANIFEST_URL = API_ENDPOINTS[API_SOURCE.MOJANG].versionMan
 export class Installer {
   private apiSource: ApiSource;
   private timeoutMs: number;
+  private process?: DownloadProcessCallback;
 
   constructor(options?: InstallerOptions) {
     this.apiSource = options?.apiSource ?? API_SOURCE.MOJANG;
     this.timeoutMs = options?.timeoutMs ?? 30000;
+    if (options?.process) {
+      this.process = options.process;
+    }
   }
 
   getVersionManifestUrl(): string {
@@ -118,31 +127,46 @@ export class Installer {
     return this.installForgeLoader(options);
   }
 
-  async downloadMinecraftVersionManifest(targetDirectory: string): Promise<VersionManifest> {
+  async downloadMinecraftVersionManifest(
+    targetDirectory: string,
+    options?: DownloadProcessOptions
+  ): Promise<VersionManifest> {
     ensureDir(targetDirectory);
     const manifestPath = join(targetDirectory, "version_manifest_v2.json");
-    await downloadFile(this.getVersionManifestUrl(), manifestPath, this.timeoutMs);
+    await downloadFile(this.getVersionManifestUrl(), manifestPath, this.getDownloadOptions(options));
     return readJson<VersionManifest>(manifestPath);
   }
 
-  async downloadVersionMetadata(url: string, targetDirectory: string): Promise<VersionMetadata> {
+  async downloadVersionMetadata(
+    url: string,
+    targetDirectory: string,
+    options?: DownloadProcessOptions
+  ): Promise<VersionMetadata> {
     ensureDir(targetDirectory);
     const targetPath = join(targetDirectory, "version.json");
-    await downloadFile(this.resolveUrl(url), targetPath, this.timeoutMs);
+    await downloadFile(this.resolveUrl(url), targetPath, this.getDownloadOptions(options));
     return readJson<VersionMetadata>(targetPath);
   }
 
-  async downloadVersionMetadataById(versionId: string, baseDirectory: string): Promise<VersionMetadata> {
-    const manifest = await this.downloadMinecraftVersionManifest(baseDirectory);
+  async downloadVersionMetadataById(
+    versionId: string,
+    baseDirectory: string,
+    options?: DownloadProcessOptions
+  ): Promise<VersionMetadata> {
+    const manifest = await this.downloadMinecraftVersionManifest(baseDirectory, options);
     const versionEntry = manifest.versions.find((entry) => entry.id === versionId);
     if (!versionEntry) {
       throw new Error(`Version ${versionId} not found in manifest.`);
     }
     const versionDir = join(getVersionDir(baseDirectory), versionId);
-    return this.downloadVersionMetadata(this.resolveUrl(versionEntry.url), versionDir);
+    return this.downloadVersionMetadata(this.resolveUrl(versionEntry.url), versionDir, options);
   }
 
-  async downloadClientJar(metadata: VersionMetadata, versionDirectory: string): Promise<string> {
+  async downloadClientJar(
+    metadata: VersionMetadata,
+    versionDirectory: string,
+    options?: DownloadProcessOptions
+  ): Promise<string> {
     const clientJar = metadata.downloads.client;
     const jarPath = join(versionDirectory, `${metadata.id}.jar`);
     const validation = await this.validateFile(jarPath, clientJar.sha1);
@@ -150,7 +174,7 @@ export class Installer {
       return jarPath;
     }
 
-    await downloadFile(this.resolveUrl(clientJar.url ?? ""), jarPath, this.timeoutMs);
+    await downloadFile(this.resolveUrl(clientJar.url ?? ""), jarPath, this.getDownloadOptions(options));
 
     if (clientJar.sha1) {
       const checksum = await sha1File(jarPath);
@@ -202,7 +226,11 @@ export class Installer {
     await this.validateAssets(metadata, baseDirectory);
   }
 
-  async downloadAssetIndex(metadata: VersionMetadata, baseDirectory: string): Promise<string> {
+  async downloadAssetIndex(
+    metadata: VersionMetadata,
+    baseDirectory: string,
+    options?: DownloadProcessOptions
+  ): Promise<string> {
     const indexesDir = join(getAssetsDir(baseDirectory), "indexes");
     const indexPath = join(indexesDir, `${metadata.assetIndex.id}.json`);
     const validation = await this.validateFile(indexPath, metadata.assetIndex.sha1);
@@ -211,19 +239,23 @@ export class Installer {
     }
 
     ensureDir(indexesDir);
-    await downloadFile(this.resolveUrl(metadata.assetIndex.url), indexPath, this.timeoutMs);
+    await downloadFile(this.resolveUrl(metadata.assetIndex.url), indexPath, this.getDownloadOptions(options));
     await this.assertValidFile(indexPath, metadata.assetIndex.sha1, `asset index ${metadata.assetIndex.id}`);
     return indexPath;
   }
 
-  async downloadAssets(metadata: VersionMetadata, baseDirectory: string): Promise<string[]> {
-    const indexPath = await this.downloadAssetIndex(metadata, baseDirectory);
+  async downloadAssets(
+    metadata: VersionMetadata,
+    baseDirectory: string,
+    options?: DownloadProcessOptions
+  ): Promise<string[]> {
+    const indexPath = await this.downloadAssetIndex(metadata, baseDirectory, options);
     const assetIndex = readJson<AssetIndexData>(indexPath);
     const assetsDir = getAssetsDir(baseDirectory);
     const assets = Object.entries(assetIndex.objects);
 
     return this.mapWithConcurrency(assets, 16, async ([assetName, asset]) => {
-      return this.downloadAssetObject(assetName, asset, assetsDir);
+      return this.downloadAssetObject(assetName, asset, assetsDir, options);
     });
   }
 
@@ -238,19 +270,27 @@ export class Installer {
     }
   }
 
-  async downloadLibraries(metadata: VersionMetadata, baseDirectory: string): Promise<string[]> {
+  async downloadLibraries(
+    metadata: VersionMetadata,
+    baseDirectory: string,
+    options?: DownloadProcessOptions
+  ): Promise<string[]> {
     const librariesDir = getLibrariesDir(baseDirectory);
     const installed: string[] = [];
 
     for (const library of metadata.libraries ?? []) {
-      const libraryPath = await this.downloadLibraryArtifact(library, librariesDir);
+      const libraryPath = await this.downloadLibraryArtifact(library, librariesDir, options);
       installed.push(libraryPath);
     }
 
     return installed;
   }
 
-  private async downloadLibraryArtifact(library: LibraryEntry, librariesDirectory: string): Promise<string> {
+  private async downloadLibraryArtifact(
+    library: LibraryEntry,
+    librariesDirectory: string,
+    options?: DownloadProcessOptions
+  ): Promise<string> {
     const artifact = library.downloads?.artifact;
     const artifactPath = artifact?.path ?? getMavenArtifactPath(library.name).path;
 
@@ -265,7 +305,7 @@ export class Installer {
     ensureDir(dirname(targetPath));
     const baseUrl = this.ensureTrailingSlash(this.resolveUrl(library.url ?? this.getLibrariesBase()));
     const url = artifact?.url ? this.resolveUrl(artifact.url) : `${baseUrl}${artifactPath}`;
-    await downloadFile(url, targetPath, this.timeoutMs);
+    await downloadFile(url, targetPath, this.getDownloadOptions(options));
 
     if (artifact?.sha1) {
       const checksum = await sha1File(targetPath);
@@ -306,7 +346,7 @@ export class Installer {
       ensureDir(installerDir);
       const installerPath = join(installerDir, `forge-${forgeVersion}-installer.jar`);
       const installerUrl = `${this.getForgeMavenBase()}net/minecraftforge/forge/${forgeVersion}/forge-${forgeVersion}-installer.jar`;
-      await downloadFile(installerUrl, installerPath, this.timeoutMs);
+      await downloadFile(installerUrl, installerPath, this.getDownloadOptions(options));
       this.ensureLauncherProfiles(options.baseDirectory, options.minecraftVersion);
 
       const javaExecutable = options.javaPath ?? findJavaExecutable();
@@ -330,7 +370,7 @@ export class Installer {
 
     const forgeMetadata = this.readVersionMetadataFromDirectory(versionDirectory, forgeId);
     const metadata = this.mergeVersionMetadata(baseVersion.metadata, forgeMetadata);
-    await this.downloadLibraries(metadata, options.baseDirectory);
+    await this.downloadLibraries(metadata, options.baseDirectory, options);
     if (options.validate ?? true) {
       await this.validateVersionFiles(metadata, options.baseDirectory, baseVersion.versionDirectory, baseVersion.clientJarPath);
     }
@@ -350,7 +390,7 @@ export class Installer {
     writeJson(join(versionDirectory, "version.json"), loaderMetadata);
     writeJson(join(versionDirectory, `${loaderMetadata.id}.json`), loaderMetadata);
 
-    await this.downloadLibraries(metadata, baseDirectory);
+    await this.downloadLibraries(metadata, baseDirectory, options);
     if (options?.validate ?? true) {
       await this.validateVersionFiles(metadata, baseDirectory, baseVersion.versionDirectory, baseVersion.clientJarPath);
     }
@@ -475,7 +515,12 @@ export class Installer {
     writeJson(profilePath, profiles);
   }
 
-  private async downloadAssetObject(assetName: string, asset: AssetObject, assetsDir: string): Promise<string> {
+  private async downloadAssetObject(
+    assetName: string,
+    asset: AssetObject,
+    assetsDir: string,
+    options?: DownloadProcessOptions
+  ): Promise<string> {
     const targetPath = this.getAssetObjectPath(assetsDir, asset.hash);
     const validation = await this.validateFile(targetPath, asset.hash);
     if (validation.valid) {
@@ -484,17 +529,17 @@ export class Installer {
 
     ensureDir(dirname(targetPath));
     const path = `${asset.hash.slice(0, 2)}/${asset.hash}`;
-    await downloadFile(`${this.getAssetsBase()}${path}`, targetPath, this.timeoutMs);
+    await downloadFile(`${this.getAssetsBase()}${path}`, targetPath, this.getDownloadOptions(options));
     await this.assertValidFile(targetPath, asset.hash, `asset ${assetName}`);
     return targetPath;
   }
 
   async prepareVersion(versionId: string, baseDirectory: string, options?: PrepareVersionOptions): Promise<PreparedVersion> {
-    const metadata = await this.downloadVersionMetadataById(versionId, baseDirectory);
+    const metadata = await this.downloadVersionMetadataById(versionId, baseDirectory, options);
     const versionDirectory = join(getVersionDir(baseDirectory), versionId);
-    const clientJarPath = await this.downloadClientJar(metadata, versionDirectory);
-    await this.downloadLibraries(metadata, baseDirectory);
-    await this.downloadAssets(metadata, baseDirectory);
+    const clientJarPath = await this.downloadClientJar(metadata, versionDirectory, options);
+    await this.downloadLibraries(metadata, baseDirectory, options);
+    await this.downloadAssets(metadata, baseDirectory, options);
     if (options?.validate ?? true) {
       await this.validateVersionFiles(metadata, baseDirectory, versionDirectory);
     }
@@ -515,7 +560,7 @@ export class Installer {
         continue;
       }
 
-      await downloadFile(mod.sourceUrl, destination, this.timeoutMs);
+      await downloadFile(mod.sourceUrl, destination, this.getDownloadOptions(options));
       installed.push(destination);
     }
 
@@ -591,6 +636,17 @@ export class Installer {
 
   private resolveUrl(url: string): string {
     return resolveApiUrl(url, this.apiSource);
+  }
+
+  private getDownloadOptions(options?: DownloadProcessOptions): DownloadFileOptions {
+    const downloadOptions: DownloadFileOptions = {
+      timeoutMs: this.timeoutMs,
+    };
+    const processCallback = options?.process ?? this.process;
+    if (processCallback) {
+      downloadOptions.process = processCallback;
+    }
+    return downloadOptions;
   }
 
   private ensureTrailingSlash(url: string): string {

@@ -1,5 +1,6 @@
 import type { AuthSession } from "./profile.js";
 import type { ModPackage, ModInstallTarget } from "./mod.js";
+import type { DownloadProcessOptions } from "../utils/downloader.js";
 
 export interface LaunchOptions {
   version: string;
@@ -22,13 +23,13 @@ export interface LaunchOptions {
   extraEnvironment?: Record<string, string>;
 }
 
-export interface DownloadOptions {
+export interface DownloadOptions extends DownloadProcessOptions {
   version: string;
   targetDirectory: string;
   timeoutMs?: number;
 }
 
-export interface InstallOptions {
+export interface InstallOptions extends DownloadProcessOptions {
   modPackages: ModPackage[];
   installTarget: ModInstallTarget;
 }

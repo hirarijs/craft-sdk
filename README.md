@@ -131,6 +131,7 @@ interface CraftSdkOptions {
   timeoutMs?: number;                 // HTTP timeout
   sessionFile?: string;               // Session persistence path
   microsoftAuth?: MicrosoftDeviceCodeLoginOptions;
+  process?: DownloadProcessCallback;  // Default download progress callback
 }
 ```
 
@@ -150,6 +151,7 @@ interface PlayGameOptions {
   gameArgs?: string[];                // Additional game arguments
   javaPath?: string;                  // Custom Java executable path
   microsoftAuth?: MicrosoftDeviceCodeLoginOptions;
+  process?: DownloadProcessCallback;  // Per-launch download progress callback
   mods?: Array<{
     id: string;
     name: string;
@@ -159,6 +161,30 @@ interface PlayGameOptions {
     loader?: string;                  // Defaults to PlayGameOptions.loader
   }>;
 }
+```
+
+### Download progress
+
+Download APIs accept a `process` callback. `progress` is a `0..1` ratio when the server sends `Content-Length`; otherwise it is omitted.
+
+```ts
+type DownloadProcessCallback = (progress: {
+  url: string;
+  filePath: string;
+  downloadedBytes: number;
+  totalBytes?: number;
+  progress?: number;
+}) => void;
+
+await sdk.playGame({
+  version: "1.20.1",
+  gameDirectory: ".minecraft",
+  process: ({ filePath, progress }) => {
+    if (progress !== undefined) {
+      console.log(`${filePath}: ${Math.round(progress * 100)}%`);
+    }
+  },
+});
 ```
 
 ## API Sources

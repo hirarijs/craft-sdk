@@ -15,12 +15,14 @@ interface CraftSdkOptions {
   apiSource?: "mojang" | "bmclapi";
   timeoutMs?: number;
   sessionFile?: string;
+  process?: DownloadProcessCallback;
 }
 ```
 
 - `apiSource`: API 来源，默认 `API_SOURCE.MOJANG`。
 - `timeoutMs`: 下载超时时间，默认由各模块使用 `30000`。
 - `sessionFile`: 认证会话文件路径，默认 `craft-sdk-session.json`。
+- `process`: 默认下载进度回调，会透传给 `downloader` 和 `installer`。
 
 ## 属性
 
@@ -61,6 +63,7 @@ interface PlayGameOptions {
   jvmArgs?: string[];
   gameArgs?: string[];
   javaPath?: string;
+  process?: DownloadProcessCallback;
   mods?: Array<{
     id: string;
     name: string;
@@ -70,6 +73,18 @@ interface PlayGameOptions {
     loader?: string;
   }>;
 }
+```
+
+`process` 可覆盖构造器中的默认下载进度回调。回调参数结构：
+
+```ts
+type DownloadProcessCallback = (progress: {
+  url: string;
+  filePath: string;
+  downloadedBytes: number;
+  totalBytes?: number;
+  progress?: number;
+}) => void;
 ```
 
 ### 认证规则

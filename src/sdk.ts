@@ -6,15 +6,16 @@ import { join, resolve } from "node:path";
 import { API_SOURCE, type ApiSource } from "./constant.js";
 import type { LaunchOptions } from "./models/options.js";
 import type { VersionMetadata } from "./models/version.js";
+import type { DownloadProcessCallback, DownloadProcessOptions } from "./utils/downloader.js";
 
-export interface CraftSdkOptions {
+export interface CraftSdkOptions extends DownloadProcessOptions {
   apiSource?: ApiSource;
   timeoutMs?: number;
   sessionFile?: string;
   microsoftAuth?: MicrosoftDeviceCodeLoginOptions;
 }
 
-export interface PlayGameOptions {
+export interface PlayGameOptions extends DownloadProcessOptions {
   version: string;
   gameDirectory: string;
   loader?: "vanilla" | "forge" | "fabric" | "quilt";
@@ -37,17 +38,20 @@ export class CraftSDK {
   public installer: Installer;
   public launcher: GameLauncher;
   private microsoftAuth?: MicrosoftDeviceCodeLoginOptions;
+  private process?: DownloadProcessCallback;
 
   constructor(options?: CraftSdkOptions) {
     const authOptions: AuthOptions = {};
     if (options?.sessionFile) authOptions.sessionFile = options.sessionFile;
     if (options?.microsoftAuth) authOptions.microsoftAuth = options.microsoftAuth;
     if (options?.microsoftAuth) this.microsoftAuth = options.microsoftAuth;
+    if (options?.process) this.process = options.process;
 
     const sharedOptions: DownloaderOptions & InstallerOptions = {
       apiSource: options?.apiSource ?? API_SOURCE.MOJANG,
     };
     if (options?.timeoutMs) sharedOptions.timeoutMs = options.timeoutMs;
+    if (options?.process) sharedOptions.process = options.process;
 
     this.auth = new AuthManager(authOptions);
     this.downloader = new Downloader(sharedOptions);
@@ -59,6 +63,7 @@ export class CraftSDK {
     const gameDir = resolve(options.gameDirectory);
     const assetsDir = join(gameDir, "assets");
     const loader = options.loader ?? "vanilla";
+    const processCallback = options.process ?? this.process;
 
     // 1. Handle authentication
     let session = this.auth.loadSession();
@@ -87,13 +92,16 @@ export class CraftSDK {
 
     // 2. Download version metadata and install loader profile when needed
     const preparedVersion = loader === "vanilla"
-      ? await this.installer.prepareVersion(options.version, gameDir)
+      ? await this.installer.prepareVersion(options.version, gameDir, {
+          ...(processCallback ? { process: processCallback } : {}),
+        })
       : await this.installer.installLoader({
           loader,
           minecraftVersion: options.version,
           baseDirectory: gameDir,
           ...(options.loaderVersion ? { loaderVersion: options.loaderVersion } : {}),
           ...(options.javaPath ? { javaPath: options.javaPath } : {}),
+          ...(processCallback ? { process: processCallback } : {}),
         });
     const { metadata, versionDirectory, clientJarPath } = preparedVersion;
 
@@ -106,6 +114,7 @@ export class CraftSDK {
       await this.installer.installMods({
         modPackages,
         installTarget: { gameDirectory: gameDir, loader },
+        ...(processCallback ? { process: processCallback } : {}),
       });
     }
 
