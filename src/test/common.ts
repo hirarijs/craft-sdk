@@ -16,12 +16,22 @@ export interface LaunchTestConfig {
 const DEFAULT_VERSION = "1.20.1";
 const DEFAULT_GAME_DIRECTORY = ".minecraft";
 
-// 进度条管理类
+// 进度条管理类：预分配固定可见槽位，循环重用，底部保留一个总进度条
 class ProgressBarManager {
-  private bars: Map<string, cliProgress.SingleBar> = new Map();
+  private slots: Array<{ key: string | null; bar: cliProgress.SingleBar; total: number; downloaded: number }> = [];
+  private slotCapacity: number;
   private multiBar: cliProgress.MultiBar;
+  private overallIndex: number; // overall bar is the last created bar
+  private stats: Map<string, { total: number; downloaded: number }> = new Map();
+  // 段统计：key -> { total, downloaded }
+  private segmentStats: Map<string, { total: number; downloaded: number }> = new Map();
+  private segmentWeights: Record<string, number>;
 
   constructor() {
+    const rows = process.stdout && (process.stdout as any).rows ? (process.stdout as any).rows : 20;
+    // 保留 3 行用于信息、总进度条等，至少保留 1 个文件槽
+    this.slotCapacity = Math.max(1, rows - 3);
+
     this.multiBar = new cliProgress.MultiBar(
       {
         clearOnComplete: false,
@@ -32,24 +42,114 @@ class ProgressBarManager {
       },
       cliProgress.Presets.shades_grey
     );
+
+    // 预创建固定数量的槽位（文件进度条）
+    for (let i = 0; i < this.slotCapacity; i++) {
+      const bar = this.multiBar.create(100, 0, { filename: "" });
+      this.slots.push({ key: null, bar, total: 100, downloaded: 0 });
+    }
+
+    // 创建总体进度条，始终位于底部
+    const overallBar = this.multiBar.create(100, 0, { filename: "TOTAL" });
+    this.slots.push({ key: "__overall__", bar: overallBar, total: 100, downloaded: 0 });
+    this.overallIndex = this.slots.length - 1;
+
+    // 默认分段权重（可按需调整）：version/client/libraries/assets/others
+    this.segmentWeights = {
+      version: 0.02,
+      client: 0.10,
+      libraries: 0.38,
+      assets: 0.50,
+      others: 0.0,
+    };
   }
 
   handleProgress(progress: DownloadProgress): void {
     const key = progress.filePath;
     const total = progress.totalBytes ?? 0;
+    const downloaded = progress.downloadedBytes;
 
-    if (!this.bars.has(key)) {
-      const filename = path.basename(progress.filePath);
-      const bar = this.multiBar.create(total > 0 ? total : 100, 0, {
-        filename: filename.length > 30 ? filename.substring(0, 27) + "..." : filename,
-      });
-      this.bars.set(key, bar);
+    // 更新统计数据
+    this.stats.set(key, { total, downloaded });
+
+    // 更新分段统计
+    const seg = this.detectSegment(key);
+    const prev = this.segmentStats.get(seg) ?? { total: 0, downloaded: 0 };
+    // 以文件级别累加，避免覆盖已有段总量（保留最大观测值）
+    prev.total = Math.max(prev.total, total);
+    prev.downloaded = prev.downloaded - (this.stats.get(key)?.downloaded ?? 0) + downloaded;
+    // 上面 line adjusts downloaded relative to previous stored per-file state; simpler: recompute segment sums below
+    this.segmentStats.set(seg, prev);
+
+    // 先尝试找到已分配的槽位
+    const existingSlot = this.slots.find((s, idx) => s.key === key && idx !== this.overallIndex);
+    if (existingSlot) {
+      existingSlot.total = total > 0 ? total : existingSlot.total;
+      existingSlot.downloaded = downloaded;
+      existingSlot.bar.setTotal(existingSlot.total > 0 ? existingSlot.total : 100);
+      existingSlot.bar.update(existingSlot.downloaded, { filename: path.basename(key) });
+    } else {
+      // 找到一个空槽或选择最久未更新的槽来重用（不包含 overall）
+      let slot = this.slots.find((s, idx) => idx !== this.overallIndex && s.key === null);
+      if (!slot) {
+        // 简单策略：重用第一个槽（可以改为 LRU）
+        slot = this.slots.find((s, idx) => idx !== this.overallIndex) as typeof this.slots[0];
+      }
+
+      if (slot) {
+        slot.key = key;
+        slot.total = total > 0 ? total : 100;
+        slot.downloaded = downloaded;
+        slot.bar.setTotal(slot.total);
+        slot.bar.update(slot.downloaded, { filename: path.basename(key).length > 30 ? path.basename(key).substring(0, 27) + "..." : path.basename(key) });
+      }
     }
 
-    const bar = this.bars.get(key)!;
-    bar.update(progress.downloadedBytes, {
-      filename: path.basename(progress.filePath),
-    });
+    this.updateOverall();
+  }
+
+  private updateOverall() {
+    // 采用分段加权策略计算总体进度，避免总量随文件列表动态扩展而波动
+    let weightSum = 0;
+    let weightedPercent = 0;
+
+    // 先重算每个分段的累计总量和已下载量（基于 this.stats）
+    const segAcc: Map<string, { total: number; downloaded: number }> = new Map();
+    for (const [file, val] of this.stats.entries()) {
+      const seg = this.detectSegment(file);
+      const cur = segAcc.get(seg) ?? { total: 0, downloaded: 0 };
+      cur.total += val.total ?? 0;
+      cur.downloaded += val.downloaded ?? 0;
+      segAcc.set(seg, cur);
+    }
+
+    for (const [seg, w] of Object.entries(this.segmentWeights)) {
+      const cur = segAcc.get(seg) ?? { total: 0, downloaded: 0 };
+      let percent = 0;
+      if (cur.total > 0) {
+        percent = Math.min(1, cur.downloaded / cur.total);
+      } else {
+        // 如果该分段尚无已知总大小，则按已下载文件数量来估算（较保守）
+        // 这里设为 0（不计入总体），或者可改为按文件计数估算
+        percent = 0;
+      }
+      weightedPercent += percent * w;
+      weightSum += w;
+    }
+
+    const overallPercent = weightSum > 0 ? weightedPercent / weightSum : 0;
+    const overallSlot = this.slots[this.overallIndex]!;
+    overallSlot.bar.setTotal(100);
+    overallSlot.bar.update(Math.round(overallPercent * 100), { filename: "TOTAL" });
+  }
+
+  private detectSegment(filePath: string): string {
+    const p = filePath.replace(/\\/g, "/");
+    if (p.includes("version_manifest") || p.includes("/versions/")) return "version";
+    if (p.includes("/libraries/")) return "libraries";
+    if (p.includes("/assets/") || p.includes("/objects/") || p.includes("indexes")) return "assets";
+    if (p.endsWith(".jar") && p.includes("/versions/")) return "client";
+    return "others";
   }
 
   stop(): void {
@@ -124,7 +224,7 @@ export async function runLaunchTest(config: LaunchTestConfig): Promise<number> {
   const progressManager = new ProgressBarManager();
 
   const sdk = new CraftSDK({
-    apiSource: API_SOURCE.BMCLAPI,
+    apiSource: API_SOURCE.MOJANG,
     sessionFile: "./craft-sdk-session.json",
     timeoutMs: 120000,
     process: (progress) => progressManager.handleProgress(progress),
