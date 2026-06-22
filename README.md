@@ -219,6 +219,8 @@ interface LaunchGameOptions {
 
 ### Custom version storage
 
+See [Custom directory install and launch example](./docs/custom-directories.md) for a fully commented end-to-end setup.
+
 By default, versions are stored under `<gameDirectory>/versions/<version-id>`. Pass `versionDirectory` to use an exact directory instead of deriving it from the version id.
 
 ```ts

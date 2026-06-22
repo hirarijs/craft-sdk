@@ -5,6 +5,7 @@ Craft SDK 是一个 Node.js/TypeScript Minecraft 启动器 SDK，提供版本准
 ## 文档导航
 
 - [快速开始](./getting-started.md)
+- [自定义目录安装与启动示例](./custom-directories.md)
 - [CraftSDK 高级入口](./craft-sdk.md)
 - [AuthManager 认证会话](./auth-manager.md)
 - [Installer 安装器](./installer.md)

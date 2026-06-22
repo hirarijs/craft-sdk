@@ -163,6 +163,8 @@ playGame(options: PlayGameOptions): Promise<number>
 
 `process` 可覆盖构造器中的默认下载进度回调。回调参数结构：
 
+完整的自定义目录安装与启动示例见 [自定义目录安装与启动示例](./custom-directories.md)。
+
 ```ts
 type DownloadProcessCallback = (progress: {
   url: string;
